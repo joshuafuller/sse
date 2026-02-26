@@ -16,14 +16,38 @@ linters:
   settings:
     govet:
       enable-all: true
+      disable:
+        # fieldalignment is a valid performance hint but changes binary layout
+        # and is not a correctness issue. Tracked in sse-6lv.
+        - fieldalignment
     gocritic:
       disabled-checks:
         - unslice
 
-issues:
-  exclude-rules:
-    # Relax errcheck and gosec in test files
-    - path: _test\.go
-      linters:
-        - errcheck
-        - gosec
+  exclusions:
+    rules:
+      # Relax errcheck and gosec in test files.
+      - path: _test\.go
+        linters:
+          - errcheck
+          - gosec
+
+      # defer f.Close() — ignoring the error is idiomatic Go for deferred closes.
+      - text: "Error return value of `.*\\.Close` is not checked"
+        linters:
+          - errcheck
+
+      # fmt.Fprint* on http.ResponseWriter — errors are typically unactionable inside handlers.
+      - text: "Error return value of `fmt\\.Fprint"
+        linters:
+          - errcheck
+
+      # G704: gosec SSRF taint-analysis false positive — the URL is caller-supplied by design.
+      - text: "G704"
+        linters:
+          - gosec
+
+      # G705: gosec XSS taint-analysis false positive — SSE is a streaming text protocol, not HTML.
+      - text: "G705"
+        linters:
+          - gosec

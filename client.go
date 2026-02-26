@@ -86,14 +86,14 @@ func (c *Client) SubscribeWithContext(ctx context.Context, stream string, handle
 		if err != nil {
 			return err
 		}
-		defer func() { resp.Body.Close() }()
+		defer func() { _ = resp.Body.Close() }()
 
 		if validator := c.ResponseValidator; validator != nil {
 			err = validator(c, resp)
 			if err != nil {
 				return err
 			}
-		} else if resp.StatusCode != 200 {
+		} else if resp.StatusCode != http.StatusOK {
 			return fmt.Errorf("could not connect to stream: %s", http.StatusText(resp.StatusCode))
 		}
 
@@ -141,14 +141,14 @@ func (c *Client) SubscribeChanWithContext(ctx context.Context, stream string, ch
 		if err != nil {
 			return err
 		}
-		defer func() { resp.Body.Close() }()
+		defer func() { _ = resp.Body.Close() }()
 
 		if validator := c.ResponseValidator; validator != nil {
 			err = validator(c, resp)
 			if err != nil {
 				return err
 			}
-		} else if resp.StatusCode != 200 {
+		} else if resp.StatusCode != http.StatusOK {
 			return fmt.Errorf("could not connect to stream: %s", http.StatusText(resp.StatusCode))
 		}
 
@@ -295,7 +295,7 @@ func (c *Client) OnConnect(fn ConnCallback) {
 }
 
 func (c *Client) request(ctx context.Context, stream string) (*http.Response, error) {
-	req, err := http.NewRequest("GET", c.URL, nil)
+	req, err := http.NewRequest(http.MethodGet, c.URL, nil)
 	if err != nil {
 		return nil, err
 	}
@@ -359,9 +359,9 @@ func (c *Client) processEvent(msg []byte) (event *Event, err error) {
 	if c.EncodingBase64 {
 		buf := make([]byte, base64.StdEncoding.DecodedLen(len(e.Data)))
 
-		n, err := base64.StdEncoding.Decode(buf, e.Data)
-		if err != nil {
-			err = fmt.Errorf("failed to decode event message: %s", err)
+		n, decodeErr := base64.StdEncoding.Decode(buf, e.Data)
+		if decodeErr != nil {
+			err = fmt.Errorf("failed to decode event message: %s", decodeErr)
 		}
 		e.Data = buf[:n]
 	}

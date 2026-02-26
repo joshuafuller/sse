@@ -1,4 +1,4 @@
-module github.com/r3labs/sse/v2
+module github.com/joshuafuller/sse/v3
 
 go 1.25.0
 
