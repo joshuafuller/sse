@@ -16,7 +16,7 @@ import (
 	"sync/atomic"
 	"time"
 
-	"gopkg.in/cenkalti/backoff.v1"
+	backoff "github.com/cenkalti/backoff/v4"
 )
 
 var (

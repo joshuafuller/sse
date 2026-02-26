@@ -17,7 +17,7 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
-	"gopkg.in/cenkalti/backoff.v1"
+	backoff "github.com/cenkalti/backoff/v4"
 )
 
 var urlPath string
@@ -310,7 +310,7 @@ func TestClientUnsubscribe401(t *testing.T) {
 	c := NewClient(urlPath)
 
 	// limit retries to 3
-	c.ReconnectStrategy = backoff.WithMaxTries(
+	c.ReconnectStrategy = backoff.WithMaxRetries(
 		backoff.NewExponentialBackOff(),
 		3,
 	)
@@ -330,7 +330,7 @@ func TestClientLargeData(t *testing.T) {
 	c := NewClient(urlPath, ClientMaxBufferSize(1<<19))
 
 	// limit retries to 3
-	c.ReconnectStrategy = backoff.WithMaxTries(
+	c.ReconnectStrategy = backoff.WithMaxRetries(
 		backoff.NewExponentialBackOff(),
 		3,
 	)
