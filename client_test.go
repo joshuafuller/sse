@@ -8,6 +8,8 @@ import (
 	"context"
 	"crypto/rand"
 	"encoding/hex"
+	"fmt"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"runtime"
@@ -421,4 +423,44 @@ func TestSubscribeWithContextDone(t *testing.T) {
 	var n2 = runtime.NumGoroutine()
 
 	assert.Equal(t, n1, n2)
+}
+
+func TestResponseBodyClosedOnValidatorError(t *testing.T) {
+	closeCalled := make(chan struct{}, 1)
+
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer srv.Close()
+
+	client := NewClient(srv.URL)
+	client.ReconnectStrategy = backoff.WithMaxRetries(backoff.NewExponentialBackOff(), 0)
+	client.ResponseValidator = func(c *Client, resp *http.Response) error {
+		original := resp.Body
+		resp.Body = &bodyCloseTracker{ReadCloser: original, closed: closeCalled}
+		return fmt.Errorf("validator rejected response")
+	}
+
+	err := client.Subscribe("", func(msg *Event) {})
+	assert.Error(t, err)
+
+	select {
+	case <-closeCalled:
+		// good
+	case <-time.After(time.Second):
+		t.Fatal("response body was not closed after validator error")
+	}
+}
+
+type bodyCloseTracker struct {
+	io.ReadCloser
+	closed chan struct{}
+}
+
+func (b *bodyCloseTracker) Close() error {
+	select {
+	case b.closed <- struct{}{}:
+	default:
+	}
+	return b.ReadCloser.Close()
 }

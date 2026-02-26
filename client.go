@@ -86,16 +86,16 @@ func (c *Client) SubscribeWithContext(ctx context.Context, stream string, handle
 		if err != nil {
 			return err
 		}
+		defer func() { resp.Body.Close() }()
+
 		if validator := c.ResponseValidator; validator != nil {
 			err = validator(c, resp)
 			if err != nil {
 				return err
 			}
 		} else if resp.StatusCode != 200 {
-			resp.Body.Close()
 			return fmt.Errorf("could not connect to stream: %s", http.StatusText(resp.StatusCode))
 		}
-		defer resp.Body.Close()
 
 		reader := NewEventStreamReader(resp.Body, c.maxBufferSize)
 		eventChan, errorChan := c.startReadLoop(reader)
@@ -138,16 +138,16 @@ func (c *Client) SubscribeChanWithContext(ctx context.Context, stream string, ch
 		if err != nil {
 			return err
 		}
+		defer func() { resp.Body.Close() }()
+
 		if validator := c.ResponseValidator; validator != nil {
 			err = validator(c, resp)
 			if err != nil {
 				return err
 			}
 		} else if resp.StatusCode != 200 {
-			resp.Body.Close()
 			return fmt.Errorf("could not connect to stream: %s", http.StatusText(resp.StatusCode))
 		}
-		defer resp.Body.Close()
 
 		if !connected {
 			// Notify connect
