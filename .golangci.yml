@@ -1,15 +1,29 @@
-linters:
-  enable-all: true
-  disable:
-    - gofmt
-    - gofumpt
-    - goimports
-    - golint # deprecated
-    - interfacer # deprecated
-    - maligned # deprecated
-    - scopelint # deprecated
-    - varnamelen
+version: "2"
 
-linters-settings:
-  govet:
-    enable-all: true
+linters:
+  default: none
+  enable:
+    - govet
+    - errcheck
+    - staticcheck
+    - gosec
+    - ineffassign
+    - gocritic
+    - usestdlibvars
+    - unused
+    - misspell
+
+  settings:
+    govet:
+      enable-all: true
+    gocritic:
+      disabled-checks:
+        - unslice
+
+issues:
+  exclude-rules:
+    # Relax errcheck and gosec in test files
+    - path: _test\.go
+      linters:
+        - errcheck
+        - gosec
