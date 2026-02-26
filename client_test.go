@@ -13,6 +13,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"runtime"
+	"sync"
 	"testing"
 	"time"
 
@@ -450,6 +451,46 @@ func TestResponseBodyClosedOnValidatorError(t *testing.T) {
 	case <-time.After(time.Second):
 		t.Fatal("response body was not closed after validator error")
 	}
+}
+
+func TestClientReconnectsAfterEOF(t *testing.T) {
+	// Server sends one event per connection then closes cleanly (EOF).
+	// Client must reconnect and receive a second event from the next connection.
+	var mu sync.Mutex
+	conns := 0
+
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		mu.Lock()
+		conns++
+		n := conns
+		mu.Unlock()
+
+		flusher := w.(http.Flusher)
+		w.Header().Set("Content-Type", "text/event-stream")
+		w.Header().Set("Cache-Control", "no-cache")
+		w.WriteHeader(http.StatusOK)
+		fmt.Fprintf(w, "data: conn%d\n\n", n)
+		flusher.Flush()
+		// Returning from the handler closes the response body → client receives EOF.
+	}))
+	defer srv.Close()
+
+	c := NewClient(srv.URL)
+	c.ReconnectStrategy = backoff.WithMaxRetries(backoff.NewExponentialBackOff(), 5)
+
+	events := make(chan *Event, 10)
+	go c.SubscribeRaw(func(msg *Event) {
+		events <- msg
+	})
+
+	ev1, err := waitEvent(events, 2*time.Second)
+	require.Nil(t, err, "timed out waiting for first event")
+	assert.Equal(t, []byte("conn1"), ev1.Data)
+
+	// Without the fix, this blocks forever — the client does not reconnect after EOF.
+	ev2, err := waitEvent(events, 2*time.Second)
+	require.Nil(t, err, "timed out waiting for second event — client did not reconnect after EOF")
+	assert.Equal(t, []byte("conn2"), ev2.Data)
 }
 
 type bodyCloseTracker struct {

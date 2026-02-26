@@ -110,13 +110,16 @@ func (c *Client) SubscribeWithContext(ctx context.Context, stream string, handle
 		}
 	}
 
-	// Apply user specified reconnection strategy or default to standard NewExponentialBackOff() reconnection method
+	// Apply user specified reconnection strategy or default to standard NewExponentialBackOff() reconnection method.
+	// Wrap with context so cancellation stops the retry loop.
 	var err error
+	var b backoff.BackOff
 	if c.ReconnectStrategy != nil {
-		err = backoff.RetryNotify(operation, c.ReconnectStrategy, c.ReconnectNotify)
+		b = backoff.WithContext(c.ReconnectStrategy, ctx)
 	} else {
-		err = backoff.RetryNotify(operation, backoff.NewExponentialBackOff(), c.ReconnectNotify)
+		b = backoff.WithContext(backoff.NewExponentialBackOff(), ctx)
 	}
+	err = backoff.RetryNotify(operation, b, c.ReconnectNotify)
 	return err
 }
 
@@ -183,13 +186,16 @@ func (c *Client) SubscribeChanWithContext(ctx context.Context, stream string, ch
 
 	go func() {
 		defer c.cleanup(ch)
-		// Apply user specified reconnection strategy or default to standard NewExponentialBackOff() reconnection method
+		// Apply user specified reconnection strategy or default to standard NewExponentialBackOff() reconnection method.
+		// Wrap with context so cancellation stops the retry loop.
 		var err error
+		var b backoff.BackOff
 		if c.ReconnectStrategy != nil {
-			err = backoff.RetryNotify(operation, c.ReconnectStrategy, c.ReconnectNotify)
+			b = backoff.WithContext(c.ReconnectStrategy, ctx)
 		} else {
-			err = backoff.RetryNotify(operation, backoff.NewExponentialBackOff(), c.ReconnectNotify)
+			b = backoff.WithContext(backoff.NewExponentialBackOff(), ctx)
 		}
+		err = backoff.RetryNotify(operation, b, c.ReconnectNotify)
 
 		// channel closed once connected
 		if err != nil && !connected {
@@ -214,7 +220,7 @@ func (c *Client) readLoop(reader *EventStreamReader, outCh chan *Event, erChan c
 		event, err := reader.ReadEvent()
 		if err != nil {
 			if err == io.EOF {
-				erChan <- nil
+				erChan <- io.EOF
 				return
 			}
 			// run user specified disconnect function
