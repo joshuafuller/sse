@@ -1,3 +1,5 @@
+.PHONY: install build lint test vuln deps clean
+
 install:
 	go install -v
 
@@ -5,16 +7,16 @@ build:
 	go build -v ./...
 
 lint:
-	golint ./...
-	go vet ./...
+	golangci-lint run ./...
 
 test:
-	go test -v ./... --cover
+	go test -v -race -count=1 ./...
+
+vuln:
+	govulncheck ./...
 
 deps:
-	go get -u gopkg.in/cenkalti/backoff.v1
-	go get -u github.com/golang/lint/golint
-	go get -u github.com/stretchr/testify
+	go mod tidy
 
 clean:
 	go clean
