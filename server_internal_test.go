@@ -190,6 +190,93 @@ func TestServerProcessEncodeBase64True(t *testing.T) {
 		result.Data, expected)
 }
 
+// --- sse-e9d: TryPublish success and drop paths ---
+
+// TestTryPublishSuccess verifies that TryPublish returns true and the event is
+// delivered when the stream's event channel has capacity.
+func TestTryPublishSuccess(t *testing.T) {
+	s := New()
+	defer s.Close()
+
+	s.CreateStream("test")
+	stream := s.getStream("test")
+	sub, ok := stream.addSubscriber(0, nil)
+	require.True(t, ok)
+
+	got := s.TryPublish("test", &Event{Data: []byte("hello")})
+	require.True(t, got, "TryPublish should return true when channel has capacity")
+
+	msg, err := wait(sub.connection, time.Second)
+	require.NoError(t, err)
+	assert.Equal(t, []byte("hello"), msg)
+}
+
+// TestTryPublishDrop verifies that TryPublish returns false and drops the event
+// when the stream's event channel is full (no blocking).
+func TestTryPublishDrop(t *testing.T) {
+	s := New()
+	s.BufferSize = 1 // tiny buffer — easy to fill
+	defer s.Close()
+
+	s.CreateStream("test")
+
+	// Fill the event channel completely so the next send would block.
+	stream := s.getStream("test")
+	stream.event <- &Event{Data: []byte("fill")}
+
+	// The channel is now full; TryPublish must drop and return false.
+	got := s.TryPublish("test", &Event{Data: []byte("dropped")})
+	assert.False(t, got, "TryPublish should return false when channel is full")
+
+	// Drain the channel to confirm only the fill event is present (the
+	// dropped event must not have been queued).
+	select {
+	case ev := <-stream.event:
+		assert.Equal(t, []byte("fill"), ev.Data, "only the fill event should be in the channel")
+	case <-time.After(time.Second):
+		t.Fatal("expected fill event in channel, got timeout")
+	}
+
+	// No further event should be in the channel.
+	select {
+	case ev := <-stream.event:
+		t.Fatalf("unexpected event in channel after drop: %q", ev.Data)
+	default:
+		// good — channel is empty
+	}
+}
+
+// TestTryPublishNonExistentStream verifies that TryPublish returns false when
+// the target stream does not exist.
+func TestTryPublishNonExistentStream(t *testing.T) {
+	s := New()
+	defer s.Close()
+
+	got := s.TryPublish("no-such-stream", &Event{Data: []byte("x")})
+	assert.False(t, got, "TryPublish should return false for a non-existent stream")
+}
+
+// --- sse-tem: StreamExists ---
+
+// TestStreamExistsTrue verifies that StreamExists returns true for a stream
+// that has been created.
+func TestStreamExistsTrue(t *testing.T) {
+	s := New()
+	defer s.Close()
+
+	s.CreateStream("present")
+	assert.True(t, s.StreamExists("present"), "StreamExists should return true for an existing stream")
+}
+
+// TestStreamExistsFalse verifies that StreamExists returns false for a stream
+// that has not been created.
+func TestStreamExistsFalse(t *testing.T) {
+	s := New()
+	defer s.Close()
+
+	assert.False(t, s.StreamExists("absent"), "StreamExists should return false for a non-existent stream")
+}
+
 // TestSubscriberDeregisterOnDisconnect verifies NF-008:
 // When a subscriber's HTTP connection is cancelled (context done), the
 // subscriber must be removed from the stream and the context-done goroutine
