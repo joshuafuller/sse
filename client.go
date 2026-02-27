@@ -84,6 +84,21 @@ func (c *Client) Subscribe(stream string, handler func(msg *Event)) error {
 
 // SubscribeWithContext to a data stream with context
 func (c *Client) SubscribeWithContext(ctx context.Context, stream string, handler func(msg *Event)) error {
+	// Apply user specified reconnection strategy or default to standard NewExponentialBackOff() reconnection method.
+	// Wrap with context so cancellation stops the retry loop.
+	var b backoff.BackOff
+	if c.ReconnectStrategy != nil {
+		b = backoff.WithContext(c.ReconnectStrategy, ctx)
+	} else {
+		eb := backoff.NewExponentialBackOff()
+		c.mu.Lock()
+		if c.retryDelay > 0 {
+			eb.InitialInterval = c.retryDelay
+		}
+		c.mu.Unlock()
+		b = backoff.WithContext(eb, ctx)
+	}
+
 	operation := func() error {
 		resp, err := c.request(ctx, stream)
 		if err != nil {
@@ -110,8 +125,9 @@ func (c *Client) SubscribeWithContext(ctx context.Context, stream string, handle
 			}
 		}
 
+		b.Reset()
 		reader := NewEventStreamReader(resp.Body, c.maxBufferSize)
-		eventChan, errorChan := c.startReadLoop(reader)
+		eventChan, errorChan := c.startReadLoop(ctx, reader)
 
 		for {
 			select {
@@ -123,23 +139,7 @@ func (c *Client) SubscribeWithContext(ctx context.Context, stream string, handle
 		}
 	}
 
-	// Apply user specified reconnection strategy or default to standard NewExponentialBackOff() reconnection method.
-	// Wrap with context so cancellation stops the retry loop.
-	var err error
-	var b backoff.BackOff
-	if c.ReconnectStrategy != nil {
-		b = backoff.WithContext(c.ReconnectStrategy, ctx)
-	} else {
-		eb := backoff.NewExponentialBackOff()
-		c.mu.Lock()
-		if c.retryDelay > 0 {
-			eb.InitialInterval = c.retryDelay
-		}
-		c.mu.Unlock()
-		b = backoff.WithContext(eb, ctx)
-	}
-	err = backoff.RetryNotify(operation, b, c.ReconnectNotify)
-	return err
+	return backoff.RetryNotify(operation, b, c.ReconnectNotify)
 }
 
 // SubscribeChan sends all events to the provided channel
@@ -155,69 +155,10 @@ func (c *Client) SubscribeChanWithContext(ctx context.Context, stream string, ch
 	c.subscribed[ch] = make(chan struct{}, 1)
 	c.mu.Unlock()
 
-	operation := func() error {
-		resp, err := c.request(ctx, stream)
-		if err != nil {
-			return err
-		}
-		defer func() { _ = resp.Body.Close() }()
-
-		if validator := c.ResponseValidator; validator != nil {
-			err = validator(c, resp)
-			if err != nil {
-				return err
-			}
-		} else {
-			if resp.StatusCode == http.StatusNoContent {
-				return backoff.Permanent(fmt.Errorf("server returned 204 No Content: reconnection disabled"))
-			}
-			if resp.StatusCode != http.StatusOK {
-				return fmt.Errorf("could not connect to stream: %s", http.StatusText(resp.StatusCode))
-			}
-			ct := resp.Header.Get("Content-Type")
-			mediaType, _, _ := mime.ParseMediaType(ct)
-			if mediaType != "text/event-stream" {
-				return backoff.Permanent(fmt.Errorf("invalid content-type %q: expected text/event-stream", ct))
-			}
-		}
-
-		if !connected {
-			// Notify connect
-			errch <- nil
-			connected = true
-		}
-
-		reader := NewEventStreamReader(resp.Body, c.maxBufferSize)
-		eventChan, errorChan := c.startReadLoop(reader)
-
-		for {
-			var msg *Event
-			// Wait for message to arrive or exit
-			select {
-			case <-c.subscribed[ch]:
-				return nil
-			case err = <-errorChan:
-				return err
-			case msg = <-eventChan:
-			}
-
-			// Wait for message to be sent or exit
-			if msg != nil {
-				select {
-				case <-c.subscribed[ch]:
-					return nil
-				case ch <- msg:
-					// message sent
-				}
-			}
-		}
-	}
-
 	go func() {
 		defer c.cleanup(ch)
 		// Apply user specified reconnection strategy or default to standard NewExponentialBackOff() reconnection method.
 		// Wrap with context so cancellation stops the retry loop.
-		var err error
 		var b backoff.BackOff
 		if c.ReconnectStrategy != nil {
 			b = backoff.WithContext(c.ReconnectStrategy, ctx)
@@ -230,7 +171,67 @@ func (c *Client) SubscribeChanWithContext(ctx context.Context, stream string, ch
 			c.mu.Unlock()
 			b = backoff.WithContext(eb, ctx)
 		}
-		err = backoff.RetryNotify(operation, b, c.ReconnectNotify)
+
+		operation := func() error {
+			resp, err := c.request(ctx, stream)
+			if err != nil {
+				return err
+			}
+			defer func() { _ = resp.Body.Close() }()
+
+			if validator := c.ResponseValidator; validator != nil {
+				err = validator(c, resp)
+				if err != nil {
+					return err
+				}
+			} else {
+				if resp.StatusCode == http.StatusNoContent {
+					return backoff.Permanent(fmt.Errorf("server returned 204 No Content: reconnection disabled"))
+				}
+				if resp.StatusCode != http.StatusOK {
+					return fmt.Errorf("could not connect to stream: %s", http.StatusText(resp.StatusCode))
+				}
+				ct := resp.Header.Get("Content-Type")
+				mediaType, _, _ := mime.ParseMediaType(ct)
+				if mediaType != "text/event-stream" {
+					return backoff.Permanent(fmt.Errorf("invalid content-type %q: expected text/event-stream", ct))
+				}
+			}
+
+			if !connected {
+				// Notify connect
+				errch <- nil
+				connected = true
+			}
+
+			b.Reset()
+			reader := NewEventStreamReader(resp.Body, c.maxBufferSize)
+			eventChan, errorChan := c.startReadLoop(ctx, reader)
+
+			for {
+				var msg *Event
+				// Wait for message to arrive or exit
+				select {
+				case <-c.subscribed[ch]:
+					return nil
+				case err = <-errorChan:
+					return err
+				case msg = <-eventChan:
+				}
+
+				// Wait for message to be sent or exit
+				if msg != nil {
+					select {
+					case <-c.subscribed[ch]:
+						return nil
+					case ch <- msg:
+						// message sent
+					}
+				}
+			}
+		}
+
+		err := backoff.RetryNotify(operation, b, c.ReconnectNotify)
 
 		// channel closed once connected
 		if err != nil && !connected {
@@ -242,15 +243,23 @@ func (c *Client) SubscribeChanWithContext(ctx context.Context, stream string, ch
 	return err
 }
 
-func (c *Client) startReadLoop(reader *EventStreamReader) (chan *Event, chan error) {
+func (c *Client) startReadLoop(ctx context.Context, reader *EventStreamReader) (chan *Event, chan error) {
 	outCh := make(chan *Event)
 	erChan := make(chan error, 1)
-	go c.readLoop(reader, outCh, erChan)
+	go c.readLoop(ctx, reader, outCh, erChan)
 	return outCh, erChan
 }
 
-func (c *Client) readLoop(reader *EventStreamReader, outCh chan *Event, erChan chan error) {
+func (c *Client) readLoop(ctx context.Context, reader *EventStreamReader, outCh chan *Event, erChan chan error) {
 	for {
+		// Check for context cancellation before each read attempt.
+		select {
+		case <-ctx.Done():
+			erChan <- ctx.Err()
+			return
+		default:
+		}
+
 		// Read each new line and process the type of event
 		event, err := reader.ReadEvent()
 		if err != nil {
@@ -298,6 +307,14 @@ func (c *Client) readLoop(reader *EventStreamReader, outCh chan *Event, erChan c
 			if len(msg.Data) > 0 || len(msg.Event) > 0 || len(msg.Retry) > 0 {
 				outCh <- msg
 			}
+		}
+
+		// Check for context cancellation after each successful event dispatch.
+		select {
+		case <-ctx.Done():
+			erChan <- ctx.Err()
+			return
+		default:
 		}
 	}
 }
@@ -349,7 +366,7 @@ func (c *Client) OnConnect(fn ConnCallback) {
 func (c *Client) request(ctx context.Context, stream string) (*http.Response, error) {
 	req, err := http.NewRequest(http.MethodGet, c.URL, nil)
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("create request: %w", err)
 	}
 	req = req.WithContext(ctx)
 
@@ -374,7 +391,11 @@ func (c *Client) request(ctx context.Context, stream string) (*http.Response, er
 		req.Header.Set(k, v)
 	}
 
-	return c.Connection.Do(req)
+	resp, err := c.Connection.Do(req)
+	if err != nil {
+		return nil, fmt.Errorf("do request: %w", err)
+	}
+	return resp, nil
 }
 
 func (c *Client) processEvent(msg []byte) (event *Event, err error) {

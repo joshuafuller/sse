@@ -10,10 +10,12 @@ import (
 	"context"
 	"crypto/rand"
 	"encoding/hex"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"runtime"
 	"strings"
 	"sync"
@@ -893,7 +895,7 @@ func TestReadLoopDoesNotLeakOnConsumerExit(t *testing.T) {
 
 	// Use startReadLoop which creates the erChan internally.
 	// Do NOT read from erChan at all — simulate consumer exit.
-	c.startReadLoop(reader)
+	c.startReadLoop(context.Background(), reader)
 
 	// Give the goroutine time to complete (if buffered) or block (if unbuffered).
 	time.Sleep(200 * time.Millisecond)
@@ -1019,6 +1021,253 @@ func TestIDFieldWithNullIgnored(t *testing.T) {
 	// LastEventID must not have been updated.
 	lastID, _ := c.LastEventID.Load().([]byte)
 	assert.Nil(t, lastID, "LastEventID must not be set when id field contains NULL")
+}
+
+// --- sse-71z: error wrapping ---
+
+// TestRequestErrorsAreWrapped verifies that errors returned by request() are
+// wrapped with fmt.Errorf("...: %w", err) so that the error message includes
+// the wrapper context string.
+func TestRequestErrorsAreWrapped(t *testing.T) {
+	t.Run("bad URL error message contains wrapper prefix", func(t *testing.T) {
+		// An invalid URL causes http.NewRequest to fail.
+		// After wrapping the message should start with "create request:".
+		c := NewClient("://bad-url")
+		c.ReconnectStrategy = backoff.WithMaxRetries(backoff.NewExponentialBackOff(), 0)
+
+		err := c.SubscribeRaw(func(msg *Event) {})
+		require.Error(t, err)
+		assert.Contains(t, err.Error(), "create request:",
+			"expected error to contain 'create request:' wrapper prefix, got: %v", err)
+	})
+
+	t.Run("connection refused error message contains wrapper prefix", func(t *testing.T) {
+		// Port 1 is almost always refused; Connection.Do fails.
+		// After wrapping the message should start with "do request:".
+		c := NewClient("http://127.0.0.1:1/sse")
+		c.ReconnectStrategy = backoff.WithMaxRetries(backoff.NewExponentialBackOff(), 0)
+
+		err := c.SubscribeRaw(func(msg *Event) {})
+		require.Error(t, err)
+		assert.Contains(t, err.Error(), "do request:",
+			"expected error to contain 'do request:' wrapper prefix, got: %v", err)
+	})
+
+	t.Run("errors.As still works through wrapper", func(t *testing.T) {
+		// Wrapping with %w must not break errors.As traversal.
+		c := NewClient("://bad-url")
+		c.ReconnectStrategy = backoff.WithMaxRetries(backoff.NewExponentialBackOff(), 0)
+
+		var urlErr *url.Error
+		err := c.SubscribeRaw(func(msg *Event) {})
+		require.Error(t, err)
+		assert.True(t, errors.As(err, &urlErr),
+			"expected errors.As to find *url.Error in wrapped error chain, got: %T: %v", err, err)
+	})
+}
+
+// --- sse-c6q: backoff reset after successful connection ---
+
+// TestBackoffResetAfterSuccessfulConnection verifies that after a successful
+// SSE connection the backoff interval is reset to its minimum so that a
+// subsequent reconnect does not start from an already-grown interval.
+//
+// Scenario:
+//  1. First attempt fails (non-SSE response) → backoff advances to a large interval.
+//  2. Second attempt succeeds with a real SSE connection then closes.
+//     b.Reset() should fire here, resetting the interval back to InitialInterval.
+//  3. Third attempt: measure how long after attempt 2 it happens.
+//     Without Reset(), it would be ~Multiplier × InitialInterval (very long).
+//     With Reset(), it should be ~InitialInterval (short).
+func TestBackoffResetAfterSuccessfulConnection(t *testing.T) {
+	var mu sync.Mutex
+	var connectTimes []time.Time
+	reqCount := 0
+
+	tsrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		mu.Lock()
+		reqCount++
+		n := reqCount
+		connectTimes = append(connectTimes, time.Now())
+		mu.Unlock()
+
+		switch n {
+		case 1:
+			// First attempt: return a non-SSE, non-permanent error so backoff advances.
+			w.Header().Set("Content-Type", "text/event-stream")
+			w.WriteHeader(http.StatusInternalServerError)
+		case 2:
+			// Second attempt: successful SSE connection, send one event then close.
+			// Closing triggers an io.EOF reconnect, exercising b.Reset().
+			w.Header().Set("Content-Type", "text/event-stream")
+			w.WriteHeader(http.StatusOK)
+			fmt.Fprint(w, "data: hello\n\n")
+			w.(http.Flusher).Flush()
+		default:
+			// Third (and subsequent) attempts: successful SSE connection.
+			w.Header().Set("Content-Type", "text/event-stream")
+			w.WriteHeader(http.StatusOK)
+			fmt.Fprint(w, "data: world\n\n")
+			w.(http.Flusher).Flush()
+		}
+	}))
+	defer tsrv.Close()
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	c := NewClient(tsrv.URL)
+	// Small InitialInterval, huge Multiplier: without Reset() the 3rd attempt
+	// would be delayed by ~(10ms * 50) = 500ms; with Reset() it's ~10ms.
+	eb := backoff.NewExponentialBackOff()
+	eb.InitialInterval = 10 * time.Millisecond
+	eb.Multiplier = 50
+	eb.MaxInterval = 60 * time.Second
+	eb.MaxElapsedTime = 0
+	c.ReconnectStrategy = backoff.WithMaxRetries(eb, 10)
+
+	received := make(chan string, 10)
+	go func() {
+		c.SubscribeRawWithContext(ctx, func(msg *Event) {
+			received <- string(msg.Data)
+		})
+	}()
+
+	// Wait for two events (one from connection 2, one from connection 3).
+	got := 0
+	deadline := time.After(4 * time.Second)
+	for got < 2 {
+		select {
+		case <-received:
+			got++
+		case <-deadline:
+			t.Fatalf("timed out waiting for events; got %d so far", got)
+		}
+	}
+
+	mu.Lock()
+	times := append([]time.Time(nil), connectTimes...)
+	mu.Unlock()
+
+	require.GreaterOrEqual(t, len(times), 3, "expected at least 3 connections")
+	// Gap between connection 2 (successful SSE) and connection 3 (post-drop reconnect).
+	gap := times[2].Sub(times[1])
+	// Without b.Reset(): gap ≈ InitialInterval * Multiplier^1 = 10ms * 50 = 500ms.
+	// With b.Reset():    gap ≈ InitialInterval = 10ms.
+	// Allow up to 400ms as a generous budget that still catches the regression.
+	assert.Less(t, gap, 400*time.Millisecond,
+		"reconnect gap after successful connection should be ~InitialInterval (%v), got %v — "+
+			"possible missing b.Reset() after successful HTTP validation",
+		eb.InitialInterval, gap)
+}
+
+// --- sse-a8c: context propagation into readLoop ---
+
+// slowReader is an io.ReadCloser that produces one SSE event per tick, pausing
+// between events. It simulates a long-lived stream that keeps sending events
+// so that readLoop keeps looping. On Close() it unblocks all pending reads.
+type slowReader struct {
+	events []string
+	idx    int
+	tick   time.Duration
+	mu     sync.Mutex
+	closed chan struct{}
+	buf    bytes.Buffer
+}
+
+func newSlowReader(events []string, tick time.Duration) *slowReader {
+	return &slowReader{events: events, tick: tick, closed: make(chan struct{})}
+}
+
+func (s *slowReader) Read(p []byte) (int, error) {
+	// If buffered data remains, serve it.
+	s.mu.Lock()
+	if s.buf.Len() > 0 {
+		n, err := s.buf.Read(p)
+		s.mu.Unlock()
+		return n, err
+	}
+	s.mu.Unlock()
+
+	// Wait tick or close.
+	select {
+	case <-s.closed:
+		return 0, io.EOF
+	case <-time.After(s.tick):
+	}
+
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.idx < len(s.events) {
+		s.buf.WriteString(s.events[s.idx])
+		s.idx++
+	} else {
+		// No more events; block indefinitely (simulates idle stream).
+		s.mu.Unlock()
+		<-s.closed
+		s.mu.Lock()
+		return 0, io.EOF
+	}
+	return s.buf.Read(p)
+}
+
+func (s *slowReader) Close() error {
+	select {
+	case <-s.closed:
+	default:
+		close(s.closed)
+	}
+	return nil
+}
+
+// TestReadLoopExitsOnContextCancel verifies that after context cancellation the
+// readLoop goroutine sends context.Canceled to erChan and exits. The goroutine
+// is checked via the post-event ctx.Done() select that runs after each
+// successfully dispatched event.
+func TestReadLoopExitsOnContextCancel(t *testing.T) {
+	c := NewClient("http://localhost")
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	// Events stream: two events then the reader blocks forever.
+	// We cancel the context after the first event arrives so that
+	// readLoop exits via the post-event ctx.Done() check.
+	sr := newSlowReader([]string{
+		"data: first\n\n",
+		"data: second\n\n",
+	}, 20*time.Millisecond)
+	defer sr.Close()
+
+	reader := NewEventStreamReader(sr, 4096)
+	outCh, erChan := c.startReadLoop(ctx, reader)
+
+	// Wait for readLoop to have an event ready to send (it blocks on outCh <- msg
+	// until we receive). Cancel the context BEFORE receiving so that by the time
+	// outCh unblocks readLoop, the post-event ctx.Done() check fires.
+	//
+	// Give the reader time to produce the first event.
+	time.Sleep(100 * time.Millisecond)
+
+	// Cancel the context while readLoop is blocked sending the first event.
+	cancel()
+
+	// Now receive the event — this unblocks readLoop's outCh send.
+	select {
+	case <-outCh:
+		// first event received
+	case <-time.After(2 * time.Second):
+		t.Fatal("timed out waiting for first event")
+	}
+
+	// readLoop should detect ctx.Done() in the post-event check and send
+	// context.Canceled to erChan promptly.
+	select {
+	case err := <-erChan:
+		assert.ErrorIs(t, err, context.Canceled,
+			"expected context.Canceled from readLoop on ctx cancel, got: %v", err)
+	case <-time.After(500 * time.Millisecond):
+		t.Fatal("readLoop did not exit within 500ms of context cancellation")
+	}
 }
 
 // TestEmptyDataWithIDNotDispatched verifies that an event containing only an
