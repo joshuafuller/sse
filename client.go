@@ -93,6 +93,8 @@ func (c *Client) SubscribeWithContext(ctx context.Context, stream string, handle
 			if err != nil {
 				return err
 			}
+		} else if resp.StatusCode == http.StatusNoContent {
+			return backoff.Permanent(fmt.Errorf("server returned 204 No Content: reconnection disabled"))
 		} else if resp.StatusCode != http.StatusOK {
 			return fmt.Errorf("could not connect to stream: %s", http.StatusText(resp.StatusCode))
 		}
@@ -148,6 +150,8 @@ func (c *Client) SubscribeChanWithContext(ctx context.Context, stream string, ch
 			if err != nil {
 				return err
 			}
+		} else if resp.StatusCode == http.StatusNoContent {
+			return backoff.Permanent(fmt.Errorf("server returned 204 No Content: reconnection disabled"))
 		} else if resp.StatusCode != http.StatusOK {
 			return fmt.Errorf("could not connect to stream: %s", http.StatusText(resp.StatusCode))
 		}

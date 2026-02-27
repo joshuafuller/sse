@@ -326,6 +326,22 @@ func TestClientUnsubscribe401(t *testing.T) {
 	require.NotNil(t, err)
 }
 
+func TestClient204NoReconnect(t *testing.T) {
+	// HTTP 204 must stop reconnection immediately — spec §9.2.3.
+	var requests int
+	tsrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		requests++
+		w.WriteHeader(http.StatusNoContent)
+	}))
+	defer tsrv.Close()
+
+	c := NewClient(tsrv.URL)
+	err := c.SubscribeRaw(func(ev *Event) {})
+
+	require.Error(t, err)
+	assert.Equal(t, 1, requests, "client must not reconnect after 204")
+}
+
 func TestClientLargeData(t *testing.T) {
 	srv = newServer()
 	defer cleanup()
