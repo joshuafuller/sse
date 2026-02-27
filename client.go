@@ -200,7 +200,14 @@ func (c *Client) SubscribeWithContext(ctx context.Context, stream string, handle
 		}
 	}
 
-	return backoff.RetryNotify(operation, b, c.ReconnectNotify)
+	err := backoff.RetryNotify(operation, b, c.ReconnectNotify)
+	// Ensure connected is cleared and disconnectcb fires when the subscribe
+	// call returns, covering the ctx-cancelled and all-retries-exhausted paths
+	// that readLoop's narrow error path does not reach.
+	if c.connected.Swap(false) && c.disconnectcb != nil {
+		c.disconnectcb(c)
+	}
+	return err
 }
 
 // SubscribeChan sends all events to the provided channel.
@@ -222,7 +229,15 @@ func (c *Client) SubscribeChanWithContext(ctx context.Context, stream string, ch
 	c.mu.Unlock()
 
 	go func() {
-		defer c.cleanup(ch)
+		defer func() {
+			// Ensure connected is cleared and disconnectcb fires when the
+			// goroutine exits, covering the ctx-cancelled path that readLoop's
+			// narrow error path does not handle.
+			if c.connected.Swap(false) && c.disconnectcb != nil {
+				c.disconnectcb(c)
+			}
+			c.cleanup(ch)
+		}()
 		// Apply user specified reconnection strategy or default to standard NewExponentialBackOff() reconnection method.
 		// Wrap with context so cancellation stops the retry loop.
 		var b backoff.BackOff
