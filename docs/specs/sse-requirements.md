@@ -200,7 +200,7 @@ Current compliance status as of 2026-02-26. Status definitions:
 |----|---------|--------|-------------|
 | WP-001 | MIME type is `text/event-stream` | COMPLIANT | — |
 | WP-002 | Stream is UTF-8 | COMPLIANT | — |
-| WP-003 | Strip leading BOM | NON-COMPLIANT | sse-cye |
+| WP-003 | Strip leading BOM | COMPLIANT | sse-cye (fixed) |
 | WP-004 | CR/LF/CRLF line endings | PARTIAL | — |
 | WP-005 | No block buffering | COMPLIANT | — |
 | WP-006 | Blank line triggers dispatch | COMPLIANT | — |
@@ -211,9 +211,9 @@ Current compliance status as of 2026-02-26. Status definitions:
 | WP-011 | Unknown fields ignored | COMPLIANT | — |
 | WP-012 | `event` field sets type buffer | COMPLIANT | — |
 | WP-013 | `data` field appends + LF (bare `data` case) | COMPLIANT | sse-pc8 (fixed) |
-| WP-014 | `id` containing NULL ignored; buffer unchanged | NON-COMPLIANT | sse-coz |
-| WP-015 | `retry` only applied if all-digit | UNTESTED | sse-3we |
-| WP-016 | Last event ID buffer persists across events | NON-COMPLIANT | sse-2mm |
+| WP-014 | `id` containing NULL ignored; buffer unchanged | COMPLIANT | sse-coz (fixed) |
+| WP-015 | `retry` only applied if all-digit | COMPLIANT | sse-3we (fixed) |
+| WP-016 | Last event ID buffer persists across events | COMPLIANT | sse-2mm (fixed) |
 | WP-017 | Empty data buffer → no dispatch | COMPLIANT | sse-pc8 (fixed) |
 | WP-018 | Strip trailing LF from data on dispatch | COMPLIANT | — |
 | WP-019 | Default event type is `"message"` | COMPLIANT | — |
@@ -223,7 +223,7 @@ Current compliance status as of 2026-02-26. Status definitions:
 | CL-002 | Send `Cache-Control: no-cache` | COMPLIANT | — |
 | CL-003 | Send `Last-Event-ID` header when non-empty | COMPLIANT | — |
 | CL-004 | `Last-Event-ID` value must not contain NULL/LF/CR | UNTESTED | — |
-| CL-005 | Validate `Content-Type: text/event-stream` | NON-COMPLIANT | sse-fk2 |
+| CL-005 | Validate `Content-Type: text/event-stream` | COMPLIANT | sse-fk2 (fixed) |
 | CL-006 | HTTP 204 → fail permanently | COMPLIANT | sse-a67 (fixed) |
 | CL-007 | Non-200 (non-redirect) → fail connection | PARTIAL | sse-6v2 |
 | CL-008 | Announce connection on open | PARTIAL | sse-6v2 |
@@ -232,16 +232,16 @@ Current compliance status as of 2026-02-26. Status definitions:
 | CL-011 | Fire error callback before reconnect | PARTIAL | — |
 | CL-012 | Initial reconnection time implementation-defined | COMPLIANT | — |
 | CL-013 | Exponential backoff on failure | COMPLIANT | — |
-| CL-014 | Last event ID persists across events | NON-COMPLIANT | sse-2mm |
-| CL-015 | Empty `id:` resets last event ID | NON-COMPLIANT | sse-2mm |
-| CL-016 | `id:` with NULL ignored | NON-COMPLIANT | sse-coz |
-| CL-017 | `retry:` applied as new reconnection time | NON-COMPLIANT | sse-3we |
+| CL-014 | Last event ID persists across events | COMPLIANT | sse-2mm (fixed) |
+| CL-015 | Empty `id:` resets last event ID | COMPLIANT | sse-2mm (fixed) |
+| CL-016 | `id:` with NULL ignored | COMPLIANT | sse-coz (fixed) |
+| CL-017 | `retry:` applied as new reconnection time | COMPLIANT | sse-3we (fixed) |
 | SV-001 | Set `Content-Type: text/event-stream` | COMPLIANT | — |
 | SV-002 | Set `Cache-Control: no-cache` | COMPLIANT | — |
 | SV-003 | Flush each event immediately | COMPLIANT | — |
 | SV-004 | Set `Connection: keep-alive` | COMPLIANT | — |
 | SV-005 | Events terminated by blank line | COMPLIANT | — |
-| SV-006 | `id:` only emitted when event has non-empty ID | NON-COMPLIANT | sse-0s5 |
+| SV-006 | `id:` only emitted when event has non-empty ID | COMPLIANT | sse-0s5 (fixed) |
 | SV-007 | Empty `id:` resets client's last event ID | UNTESTED | — |
 | SV-008 | Multi-line data → multiple `data:` fields | COMPLIANT | — |
 | SV-009 | Comment/keepalive line format | COMPLIANT | — |
@@ -259,9 +259,9 @@ Current compliance status as of 2026-02-26. Status definitions:
 | NF-006 | EventLog bounded (max size / TTL) | PARTIAL | sse-eg7 (fixed MaxEntries), sse-bbt (TTL pending) |
 | NF-007 | Scanner buffer configurable max size | PARTIAL | sse-5xl |
 | NF-008 | Connection close releases all resources | PARTIAL | sse-svu |
-| NF-009 | Writer errors checked in ServeHTTP | NON-COMPLIANT | sse-6lv |
+| NF-009 | Writer errors checked in ServeHTTP | COMPLIANT | sse-6lv (fixed) |
 | NF-010 | External errors wrapped with context | NON-COMPLIANT | sse-71z |
 | NF-011 | Scanner overflow surfaced (not silent) | COMPLIANT | sse-2e2 (fixed) |
 | NF-012 | Public API has test coverage | PARTIAL | — |
-| NF-013 | Tests are deterministic | NON-COMPLIANT | sse-zfc |
+| NF-013 | Tests are deterministic | COMPLIANT | sse-zfc (fixed) |
 | NF-014 | Tests in external package (`sse_test`) | NON-COMPLIANT | sse-4pn |
