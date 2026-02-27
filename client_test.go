@@ -499,6 +499,84 @@ func TestClientReconnectsAfterEOF(t *testing.T) {
 	assert.Equal(t, []byte("conn2"), ev2.Data)
 }
 
+func TestClientUnsubscribeWhileBackingOff(t *testing.T) {
+	// When the client is in a reconnect backoff sleep (between retries),
+	// Unsubscribe must return immediately — not block until the sleep expires.
+	//
+	// Use an isolated server that accepts the SSE connection but sends no
+	// events, so the connection stays open and idle until we close it. This
+	// reliably puts the goroutine into the backoff select after disconnect.
+	connected := make(chan struct{}, 1)
+	tsrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		w.Header().Set("Cache-Control", "no-cache")
+		w.WriteHeader(http.StatusOK)
+		w.(http.Flusher).Flush()
+		connected <- struct{}{}
+		<-r.Context().Done() // hold open until client disconnects
+	}))
+	defer tsrv.Close()
+
+	c := NewClient(tsrv.URL)
+	// Long constant backoff so the goroutine is guaranteed to be sleeping
+	// when we call Unsubscribe.
+	c.ReconnectStrategy = backoff.NewConstantBackOff(10 * time.Second)
+
+	events := make(chan *Event)
+	err := c.SubscribeChan("", events)
+	require.Nil(t, err)
+
+	// Wait for the server to confirm the connection is live.
+	<-connected
+
+	// Force the client into a reconnect cycle.
+	tsrv.CloseClientConnections()
+
+	// Give the goroutine time to enter the backoff sleep.
+	time.Sleep(150 * time.Millisecond)
+
+	// Unsubscribe must not block even though the goroutine is sleeping.
+	done := make(chan struct{})
+	go func() {
+		c.Unsubscribe(events)
+		close(done)
+	}()
+
+	select {
+	case <-done:
+		// good
+	case <-time.After(time.Second):
+		t.Fatal("Unsubscribe blocked while client was in reconnect backoff")
+	}
+}
+
+func TestClientDoubleUnsubscribeNoDeadlock(t *testing.T) {
+	// Two concurrent Unsubscribe calls must both return without deadlocking.
+	setup(false)
+	defer cleanup()
+
+	c := NewClient(urlPath)
+
+	events := make(chan *Event)
+	err := c.SubscribeChan("test", events)
+	require.Nil(t, err)
+
+	var wg sync.WaitGroup
+	wg.Add(2)
+	go func() { defer wg.Done(); c.Unsubscribe(events) }()
+	go func() { defer wg.Done(); c.Unsubscribe(events) }()
+
+	done := make(chan struct{})
+	go func() { wg.Wait(); close(done) }()
+
+	select {
+	case <-done:
+		// good — both calls returned
+	case <-time.After(2 * time.Second):
+		t.Fatal("concurrent Unsubscribe calls deadlocked")
+	}
+}
+
 type bodyCloseTracker struct {
 	io.ReadCloser
 	closed chan struct{}

@@ -133,7 +133,7 @@ func (c *Client) SubscribeChanWithContext(ctx context.Context, stream string, ch
 	var connected bool
 	errch := make(chan error)
 	c.mu.Lock()
-	c.subscribed[ch] = make(chan struct{})
+	c.subscribed[ch] = make(chan struct{}, 1)
 	c.mu.Unlock()
 
 	operation := func() error {
@@ -280,7 +280,11 @@ func (c *Client) Unsubscribe(ch chan *Event) {
 	defer c.mu.Unlock()
 
 	if c.subscribed[ch] != nil {
-		c.subscribed[ch] <- struct{}{}
+		select {
+		case c.subscribed[ch] <- struct{}{}:
+		default:
+			// already signalled; goroutine will pick it up when it next enters select
+		}
 	}
 }
 
