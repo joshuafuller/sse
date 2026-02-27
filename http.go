@@ -91,6 +91,12 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	w.WriteHeader(http.StatusOK)
 	flusher.Flush()
 
+	// If set, call OnSubscribeHTTP so the caller can write an initial event
+	// (e.g. a "connected" message) before the main event loop begins.
+	if s.OnSubscribeHTTP != nil {
+		s.OnSubscribeHTTP(streamID, w)
+	}
+
 	// Push events to client
 	ew := &errWriter{w: w}
 

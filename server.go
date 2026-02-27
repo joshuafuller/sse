@@ -6,6 +6,7 @@ package sse
 
 import (
 	"encoding/base64"
+	"net/http"
 	"sync"
 	"time"
 )
@@ -33,6 +34,12 @@ type Server struct {
 	// Specifies the function to run when client subscribe or un-subscribe
 	OnSubscribe   func(streamID string, sub *Subscriber)
 	OnUnsubscribe func(streamID string, sub *Subscriber)
+
+	// OnSubscribeHTTP is called with the ResponseWriter when a new subscriber
+	// connects, before the main event loop begins. Implementors can write
+	// initial events (e.g. a "connected" message) directly to w. Both
+	// OnSubscribe and OnSubscribeHTTP fire when set.
+	OnSubscribeHTTP func(streamID string, w http.ResponseWriter)
 
 	streams   map[string]*Stream
 	muStreams sync.RWMutex

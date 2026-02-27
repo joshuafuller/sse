@@ -25,9 +25,35 @@ type Stream struct {
 	AutoReplay   bool
 	isAutoStream bool
 
-	// Specifies the function to run when client subscribe or un-subscribe
+	// Specifies the function to run when client subscribe or un-subscribe.
+	// These are set from the server-level callbacks via newStream.
 	OnSubscribe   func(streamID string, sub *Subscriber)
 	OnUnsubscribe func(streamID string, sub *Subscriber)
+
+	// mu protects the per-stream callback fields below.
+	mu sync.RWMutex
+
+	// Per-stream callbacks that fire in addition to the server-level ones.
+	// Use SetOnSubscribe / SetOnUnsubscribe to set these safely.
+	streamOnSubscribe   func(streamID string, sub *Subscriber)
+	streamOnUnsubscribe func(streamID string, sub *Subscriber)
+}
+
+// SetOnSubscribe sets a per-stream subscribe callback that fires in addition
+// to the server-level OnSubscribe callback. It is safe to call concurrently.
+func (str *Stream) SetOnSubscribe(fn func(streamID string, sub *Subscriber)) {
+	str.mu.Lock()
+	str.streamOnSubscribe = fn
+	str.mu.Unlock()
+}
+
+// SetOnUnsubscribe sets a per-stream unsubscribe callback that fires in
+// addition to the server-level OnUnsubscribe callback. It is safe to call
+// concurrently.
+func (str *Stream) SetOnUnsubscribe(fn func(streamID string, sub *Subscriber)) {
+	str.mu.Lock()
+	str.streamOnUnsubscribe = fn
+	str.mu.Unlock()
 }
 
 // newStream returns a new stream
@@ -67,6 +93,13 @@ func (str *Stream) run() {
 
 				if str.OnUnsubscribe != nil {
 					go str.OnUnsubscribe(str.ID, subscriber)
+				}
+
+				str.mu.RLock()
+				perStreamUnsub := str.streamOnUnsubscribe
+				str.mu.RUnlock()
+				if perStreamUnsub != nil {
+					go perStreamUnsub(str.ID, subscriber)
 				}
 
 			// Publish event to subscribers
@@ -125,6 +158,13 @@ func (str *Stream) addSubscriber(eventid int, url *url.URL) *Subscriber {
 
 	if str.OnSubscribe != nil {
 		go str.OnSubscribe(str.ID, sub)
+	}
+
+	str.mu.RLock()
+	perStreamSub := str.streamOnSubscribe
+	str.mu.RUnlock()
+	if perStreamSub != nil {
+		go perStreamSub(str.ID, sub)
 	}
 
 	return sub

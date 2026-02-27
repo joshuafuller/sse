@@ -5,10 +5,13 @@
 package sse
 
 import (
+	"context"
 	"errors"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"strconv"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -461,4 +464,153 @@ func TestHTTPStreamHandlerAutoStream(t *testing.T) {
 	_, _ = wait(events, 1*time.Second)
 
 	assert.Equal(t, (*Stream)(nil), sseServer.getStream("test"))
+}
+
+// TestPerStreamOnSubscribeOverride verifies sse-iju:
+// A per-stream StreamOnSubscribe callback fires when a client connects to that
+// stream, while the server-level OnSubscribe fires only for other streams.
+func TestPerStreamOnSubscribeOverride(t *testing.T) {
+	t.Parallel()
+
+	var serverCalls int32 // count of server-level OnSubscribe calls
+	var streamCalls int32 // count of per-stream StreamOnSubscribe calls
+
+	s := New()
+	defer s.Close()
+
+	s.OnSubscribe = func(streamID string, sub *Subscriber) {
+		atomic.AddInt32(&serverCalls, 1)
+	}
+
+	mux := http.NewServeMux()
+	mux.HandleFunc("/events", s.ServeHTTP)
+	srv := httptest.NewServer(mux)
+
+	// Create "alpha" — this is the stream we attach a per-stream callback to.
+	streamAlpha := s.CreateStream("alpha")
+
+	// Set a per-stream callback on alpha using the thread-safe setter.
+	streamAlpha.SetOnSubscribe(func(streamID string, sub *Subscriber) {
+		atomic.AddInt32(&streamCalls, 1)
+	})
+
+	// Also create "beta" — connections to it should only fire the server-level callback.
+	s.CreateStream("beta")
+
+	// Connect a raw HTTP client to "alpha" using a cancelable context so we can
+	// terminate the connection cleanly without blocking server.Close().
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, srv.URL+"/events?stream=alpha", nil)
+	require.NoError(t, err)
+
+	go func() { _, _ = http.DefaultClient.Do(req) }() //nolint:bodyclose
+
+	// Allow time for the connection to register and callbacks to fire.
+	time.Sleep(200 * time.Millisecond)
+
+	// The per-stream callback must have fired exactly once for alpha.
+	assert.EqualValues(t, 1, atomic.LoadInt32(&streamCalls),
+		"per-stream StreamOnSubscribe should fire when a client connects to that stream")
+
+	// The server-level callback must also have fired (both fire).
+	assert.EqualValues(t, 1, atomic.LoadInt32(&serverCalls),
+		"server-level OnSubscribe should also fire")
+
+	// Cancel the context to close the SSE connection before server.Close().
+	cancel()
+	time.Sleep(50 * time.Millisecond)
+	srv.Close()
+}
+
+// TestPerStreamOnUnsubscribeOverride verifies sse-iju:
+// A per-stream StreamOnUnsubscribe callback fires when a client disconnects.
+func TestPerStreamOnUnsubscribeOverride(t *testing.T) {
+	t.Parallel()
+
+	var streamUnsub int32
+
+	s := New()
+	defer s.Close()
+
+	mux := http.NewServeMux()
+	mux.HandleFunc("/events", s.ServeHTTP)
+	srv := httptest.NewServer(mux)
+
+	stream := s.CreateStream("gamma")
+	stream.SetOnUnsubscribe(func(streamID string, sub *Subscriber) {
+		atomic.AddInt32(&streamUnsub, 1)
+	})
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, srv.URL+"/events?stream=gamma", nil)
+	require.NoError(t, err)
+
+	go func() { _, _ = http.DefaultClient.Do(req) }() //nolint:bodyclose
+
+	// Wait for the subscriber to register.
+	time.Sleep(200 * time.Millisecond)
+
+	// Disconnect by cancelling the context.
+	cancel()
+
+	// Give the deregister goroutine time to fire.
+	time.Sleep(200 * time.Millisecond)
+
+	assert.EqualValues(t, 1, atomic.LoadInt32(&streamUnsub),
+		"per-stream StreamOnUnsubscribe should fire when a client disconnects")
+
+	srv.Close()
+}
+
+// TestOnSubscribeHTTP verifies sse-9ju:
+// Server.OnSubscribeHTTP is called with the correct streamID and a valid
+// http.ResponseWriter when a client connects.  Data written to w inside the
+// callback must be received by the client before any normally published events.
+func TestOnSubscribeHTTP(t *testing.T) {
+	t.Parallel()
+
+	s := New()
+	defer s.Close()
+	s.AutoReplay = false
+
+	// OnSubscribeHTTP writes a synthetic "welcome" event to the client.
+	s.OnSubscribeHTTP = func(streamID string, w http.ResponseWriter) {
+		_, _ = fmt.Fprintf(w, "data: welcome to %s\n\n", streamID)
+		if f, ok := w.(http.Flusher); ok {
+			f.Flush()
+		}
+	}
+
+	mux := http.NewServeMux()
+	mux.HandleFunc("/events", s.ServeHTTP)
+	server := httptest.NewServer(mux)
+	defer server.Close()
+
+	s.CreateStream("delta")
+
+	// Open the raw SSE connection so we can inspect raw bytes.
+	resp, err := http.Get(server.URL + "/events?stream=delta")
+	require.NoError(t, err)
+	defer resp.Body.Close()
+	require.Equal(t, http.StatusOK, resp.StatusCode)
+
+	// Read the first chunk of data from the SSE stream.
+	done := make(chan []byte, 1)
+	go func() {
+		buf := make([]byte, 4096)
+		n, _ := resp.Body.Read(buf)
+		done <- buf[:n]
+	}()
+
+	select {
+	case data := <-done:
+		assert.Contains(t, string(data), "welcome to delta",
+			"OnSubscribeHTTP-written event must be received by the client")
+	case <-time.After(2 * time.Second):
+		t.Fatal("timed out waiting for OnSubscribeHTTP initial event")
+	}
 }
