@@ -1527,3 +1527,75 @@ func TestClientBodyFactoryCalledOnReconnect(t *testing.T) {
 	got := atomic.LoadInt32(&callCount)
 	assert.GreaterOrEqual(t, got, int32(3), "Body factory must be called at least 3 times (once per attempt); got %d", got)
 }
+
+// --- sse-tem: SubscribeChanRaw and SubscribeChanRawWithContext smoke tests ---
+
+// newRawSSEServer returns a test HTTP server that immediately streams a single
+// SSE event with the given data and then holds the connection open until the
+// client disconnects. The connected channel receives a value once the handler
+// is active.
+func newRawSSEServer(data string, connected chan struct{}) *httptest.Server {
+	once := sync.Once{}
+	return httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		w.Header().Set("Cache-Control", "no-cache")
+		w.WriteHeader(http.StatusOK)
+		_, _ = fmt.Fprintf(w, "data: %s\n\n", data)
+		w.(http.Flusher).Flush()
+		once.Do(func() { connected <- struct{}{} })
+		<-r.Context().Done()
+	}))
+}
+
+// TestClientSubscribeChanRaw verifies that SubscribeChanRaw is a transparent
+// wrapper around SubscribeChan("", ch): events sent by the server without a
+// stream query parameter are delivered to the channel.
+func TestClientSubscribeChanRaw(t *testing.T) {
+	connected := make(chan struct{}, 1)
+	tsrv := newRawSSEServer("ping", connected)
+	defer tsrv.Close()
+
+	c := sse.NewClient(tsrv.URL)
+	c.ReconnectStrategy = backoff.NewConstantBackOff(50 * time.Millisecond)
+
+	events := make(chan *sse.Event)
+	err := c.SubscribeChanRaw(events)
+	require.Nil(t, err)
+
+	<-connected
+
+	msg, merr := wait(events, time.Second)
+	require.Nil(t, merr)
+	assert.Equal(t, []byte("ping"), msg)
+
+	c.Unsubscribe(events)
+}
+
+// TestClientSubscribeChanRawWithContext verifies that
+// SubscribeChanRawWithContext is a transparent wrapper around
+// SubscribeChanWithContext(ctx, "", ch): events are delivered and cancelling
+// the context stops delivery cleanly.
+func TestClientSubscribeChanRawWithContext(t *testing.T) {
+	connected := make(chan struct{}, 1)
+	tsrv := newRawSSEServer("ping", connected)
+	defer tsrv.Close()
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	c := sse.NewClient(tsrv.URL)
+	c.ReconnectStrategy = backoff.NewConstantBackOff(50 * time.Millisecond)
+
+	events := make(chan *sse.Event)
+	err := c.SubscribeChanRawWithContext(ctx, events)
+	require.Nil(t, err)
+
+	<-connected
+
+	msg, merr := wait(events, time.Second)
+	require.Nil(t, merr)
+	assert.Equal(t, []byte("ping"), msg)
+
+	cancel()
+	c.Unsubscribe(events)
+}
