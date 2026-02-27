@@ -269,3 +269,85 @@ rules:
     paths:
       exclude:
         - "*_test.go"
+
+  # Rule L3: No writes to stdout/stderr in library code.
+  # Libraries must never print to stdout or stderr. Doing so hijacks the
+  # caller's output, breaks applications that parse their own stdout, and
+  # makes the library impossible to silence. Return errors or accept a
+  # logger interface instead.
+  - id: no-fmt-print-to-stdout
+    pattern-either:
+      - pattern: fmt.Print(...)
+      - pattern: fmt.Println(...)
+      - pattern: fmt.Printf(...)
+    message: >
+      Library code must not write to stdout. fmt.Print/Println/Printf writes
+      are invisible to callers and cannot be silenced. Return an error or
+      accept an io.Writer / slog.Logger parameter instead.
+    languages: [go]
+    severity: ERROR
+    paths:
+      exclude:
+        - "*_test.go"
+
+  # Rule L4: No time.Sleep in library code.
+  # Libraries must not sleep. Sleeping blocks the caller's goroutine for an
+  # arbitrary duration they did not request, makes tests slow, and prevents
+  # proper context cancellation. Retry delays and backoff belong to the
+  # caller or to an injected backoff strategy (as this library already does).
+  - id: no-time-sleep-in-library
+    pattern: time.Sleep(...)
+    message: >
+      Library code must not call time.Sleep(). Sleeping blocks the caller
+      without their consent and ignores context cancellation. Use a backoff
+      strategy, a timer channel with a select on ctx.Done(), or require the
+      caller to manage delays.
+    languages: [go]
+    severity: ERROR
+    paths:
+      exclude:
+        - "*_test.go"
+
+  # Rule L5: No use of http.DefaultClient or the package-level HTTP helpers.
+  # http.Get, http.Post, http.Head, http.PostForm and http.DefaultClient all
+  # use the shared DefaultClient which has no timeout, cannot be replaced by
+  # the caller, and may share connection pools across the application.
+  # Libraries must require callers to supply their own *http.Client.
+  - id: no-http-default-client
+    pattern-either:
+      - pattern: http.Get(...)
+      - pattern: http.Post(...)
+      - pattern: http.Head(...)
+      - pattern: http.PostForm(...)
+      - pattern: http.DefaultClient
+      - pattern: http.DefaultTransport
+    message: >
+      Library code must not use http.DefaultClient or the package-level HTTP
+      helpers (http.Get, http.Post, …). These share a global client with no
+      timeout and cannot be replaced by the caller. Accept an *http.Client
+      parameter or store one on the struct (as Client.Connection already does).
+    languages: [go]
+    severity: ERROR
+    paths:
+      exclude:
+        - "*_test.go"
+
+  # Rule L6: Inline errors.New() returned directly from a function.
+  # An inline errors.New("...") creates an anonymous error value that callers
+  # cannot test with errors.Is() — every call site produces a distinct value.
+  # Declare a package-level sentinel instead:
+  #   var ErrEmptyEvent = errors.New("event message was empty")
+  # Callers can then write: if errors.Is(err, sse.ErrEmptyEvent) { ... }
+  - id: inline-errors-new-return
+    pattern: return ..., errors.New("...")
+    message: >
+      Returning an inline errors.New("...") prevents callers from using
+      errors.Is() to distinguish this error from others. Declare a
+      package-level sentinel variable instead:
+        var ErrFoo = errors.New("foo")
+      and return that variable. Callers can then match it precisely.
+    languages: [go]
+    severity: WARNING
+    paths:
+      exclude:
+        - "*_test.go"

@@ -28,6 +28,10 @@ var (
 	headerRetry = []byte("retry:")
 )
 
+// ErrEmptyEventMessage is returned by the event parser when a raw event block
+// contains no bytes. Callers can detect this with errors.Is.
+var ErrEmptyEventMessage = errors.New("event message was empty")
+
 // StreamError is returned when the server responds with a non-200 HTTP status.
 // Callers can inspect the status code and raw body via errors.As.
 type StreamError struct {
@@ -515,7 +519,7 @@ func (c *Client) processEvent(msg []byte) (event *Event, err error) {
 	var e Event
 
 	if len(msg) < 1 {
-		return nil, errors.New("event message was empty")
+		return nil, ErrEmptyEventMessage
 	}
 
 	// Split the event block into individual field lines.
