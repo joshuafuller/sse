@@ -429,29 +429,64 @@ func TestTrimHeader(t *testing.T) {
 }
 
 func TestSubscribeWithContextDone(t *testing.T) {
-	setup(false)
-	defer cleanup()
+	// Use an isolated server that streams events on demand so we don't
+	// depend on the global setup/cleanup helpers or their timing.
+	tsrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		w.Header().Set("Cache-Control", "no-cache")
+		w.WriteHeader(http.StatusOK)
+		flusher := w.(http.Flusher)
+		flusher.Flush()
+		// Stream events until the client disconnects.
+		for {
+			_, err := fmt.Fprint(w, "data: ping\n\n")
+			if err != nil {
+				return
+			}
+			flusher.Flush()
+			time.Sleep(50 * time.Millisecond)
+		}
+	}))
+	defer tsrv.Close()
 
 	ctx, cancel := context.WithCancel(context.Background())
 
-	var n1 = runtime.NumGoroutine()
+	const numSubs = 10
+	// connected confirms each goroutine has received at least one event,
+	// proving it is fully subscribed before we cancel the context.
+	var connected sync.WaitGroup
+	connected.Add(numSubs)
 
-	c := NewClient(urlPath)
+	// done tracks when each SubscribeWithContext call returns.
+	var done sync.WaitGroup
+	done.Add(numSubs)
 
-	for i := 0; i < 10; i++ {
-		go c.SubscribeWithContext(ctx, "test", func(msg *Event) {})
+	c := NewClient(tsrv.URL)
+
+	for i := 0; i < numSubs; i++ {
+		go func() {
+			defer done.Done()
+			once := sync.Once{}
+			c.SubscribeWithContext(ctx, "", func(msg *Event) {
+				once.Do(func() { connected.Done() })
+			})
+		}()
 	}
 
-	time.Sleep(1 * time.Second)
+	// Wait for all goroutines to be fully subscribed (event-driven, not time-based).
+	connected.Wait()
 	cancel()
 
-	time.Sleep(1 * time.Second)
-	var n2 = runtime.NumGoroutine()
+	// Wait for all SubscribeWithContext calls to return after context cancellation.
+	doneCh := make(chan struct{})
+	go func() { done.Wait(); close(doneCh) }()
 
-	// Goroutines spawned by Subscribe must all exit after context cancellation (no leak).
-	// n2 <= n1 proves this: no accumulation. n2 < n1 is also acceptable — background
-	// goroutines from previous tests may finish during the measurement window.
-	assert.LessOrEqual(t, n2, n1)
+	select {
+	case <-doneCh:
+		// All goroutines exited — no leak.
+	case <-time.After(5 * time.Second):
+		t.Fatal("goroutines spawned by SubscribeWithContext did not exit after context cancellation")
+	}
 }
 
 func TestResponseBodyClosedOnValidatorError(t *testing.T) {
@@ -941,6 +976,49 @@ func TestSubscribeWithContextCanceled(t *testing.T) {
 	case <-time.After(5 * time.Second):
 		t.Fatal("timed out waiting for SubscribeWithContext to return")
 	}
+}
+
+// TestIDFieldWithNullIgnored verifies that an id: field whose value contains
+// U+0000 NULL is completely ignored, per WHATWG SSE §9.2.6.
+// The event itself should still be dispatched (data is valid), but LastEventID
+// must not be updated and IDPresent must be false.
+func TestIDFieldWithNullIgnored(t *testing.T) {
+	// id value contains a NULL byte — must be ignored.
+	raw := "id: abc\x00def\ndata: hello\n\n"
+
+	tsrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		w.WriteHeader(http.StatusOK)
+		fmt.Fprint(w, raw)
+		w.(http.Flusher).Flush()
+	}))
+	defer tsrv.Close()
+
+	c := NewClient(tsrv.URL)
+	c.ReconnectStrategy = backoff.WithMaxRetries(backoff.NewExponentialBackOff(), 0)
+
+	done := make(chan *Event, 1)
+	go func() {
+		c.SubscribeRaw(func(msg *Event) {
+			done <- msg
+		})
+	}()
+
+	select {
+	case ev := <-done:
+		// Event must be dispatched (data is valid).
+		assert.Equal(t, []byte("hello"), ev.Data)
+		// IDPresent must be false — the NULL-containing id was ignored.
+		assert.False(t, ev.IDPresent, "IDPresent should be false when id contains NULL")
+		// ID on the event should be empty (inherited from LastEventID which was never set).
+		assert.Empty(t, ev.ID, "ID should be empty when id field contains NULL")
+	case <-time.After(3 * time.Second):
+		t.Fatal("timed out waiting for event")
+	}
+
+	// LastEventID must not have been updated.
+	lastID, _ := c.LastEventID.Load().([]byte)
+	assert.Nil(t, lastID, "LastEventID must not be set when id field contains NULL")
 }
 
 // TestEmptyDataWithIDNotDispatched verifies that an event containing only an

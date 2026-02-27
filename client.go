@@ -389,8 +389,11 @@ func (c *Client) processEvent(msg []byte) (event *Event, err error) {
 	for _, line := range bytes.FieldsFunc(msg, func(r rune) bool { return r == '\n' || r == '\r' }) {
 		switch {
 		case bytes.HasPrefix(line, headerID):
-			e.IDPresent = true
-			e.ID = append([]byte(nil), trimHeader(len(headerID), line)...)
+			val := trimHeader(len(headerID), line)
+			if !bytes.ContainsRune(val, 0) { // ignore if contains NULL
+				e.ID = append([]byte(nil), val...)
+				e.IDPresent = true
+			}
 		case bytes.HasPrefix(line, headerData):
 			// The spec allows for multiple data fields per event, concatenated them with "\n".
 			e.Data = append(e.Data[:], append(trimHeader(len(headerData), line), byte('\n'))...)
