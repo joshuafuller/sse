@@ -2,6 +2,9 @@
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
 
+// Package sse — white-box test file (sse-4pn).
+// Cannot migrate to package sse_test because the tests access unexported
+// identifiers: trimHeader (func), headerData (var).
 package sse
 
 import (
@@ -209,22 +212,44 @@ func TestClientChanSubscribe(t *testing.T) {
 }
 
 func TestClientOnDisconnect(t *testing.T) {
+	// OnDisconnect fires when a real network-level error occurs (not on EOF
+	// or ErrUnexpectedEOF which trigger silent reconnects per sse-fyk).
+	//
+	// After the initial connection is established, we cancel the client
+	// context so it stops reconnecting, then close the server. This
+	// produces a real dial error on the final reconnect attempt, which
+	// fires disconnectcb.
+	//
+	// Implementation: run server.Close in a goroutine (it may block waiting
+	// for connections to drain) and wait for the called channel in parallel.
 	setup(false)
 	defer cleanup()
 
 	c := NewClient(urlPath)
 
-	called := make(chan struct{})
+	called := make(chan struct{}, 1)
 	c.OnDisconnect(func(client *Client) {
-		called <- struct{}{}
+		select {
+		case called <- struct{}{}:
+		default:
+		}
 	})
 
 	go c.Subscribe("test", func(msg *Event) {})
 
+	// Wait for the subscription to be established.
 	time.Sleep(time.Second)
-	server.CloseClientConnections()
 
-	assert.Equal(t, struct{}{}, <-called)
+	// Close the server in the background; this unblocks once all connections
+	// drain (which will happen when disconnectcb fires and the client stops).
+	go server.Close()
+
+	select {
+	case <-called:
+		// good — disconnectcb fired when reconnect hit the closed server
+	case <-time.After(10 * time.Second):
+		t.Fatal("OnDisconnect callback was not called within 10 seconds after server shutdown")
+	}
 }
 
 func TestClientOnConnect(t *testing.T) {
@@ -1322,4 +1347,209 @@ func TestEmptyDataWithIDNotDispatched(t *testing.T) {
 	// LastEventID should still be set from the id-only event.
 	lastID, _ := c.LastEventID.Load().([]byte)
 	assert.Equal(t, []byte("42"), lastID, "LastEventID should be set even though event was not dispatched")
+}
+
+// --- sse-gky: StreamError type wraps non-200 status codes ---
+
+// TestStreamErrorWrapsNon200 verifies that when the server returns a non-200
+// status, the error is wrapped as a *StreamError so callers can use errors.As.
+func TestStreamErrorWrapsNon200(t *testing.T) {
+	tsrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusServiceUnavailable)
+		_, _ = w.Write([]byte("service unavailable"))
+	}))
+	defer tsrv.Close()
+
+	c := NewClient(tsrv.URL)
+	// Stop after one attempt so the test finishes quickly.
+	c.ReconnectStrategy = backoff.WithMaxRetries(backoff.NewExponentialBackOff(), 0)
+
+	err := c.SubscribeRaw(func(ev *Event) {})
+	require.Error(t, err)
+
+	var se *StreamError
+	require.True(t, errors.As(err, &se), "expected *StreamError in error chain, got: %T: %v", err, err)
+	assert.Equal(t, http.StatusServiceUnavailable, se.StatusCode)
+	assert.Contains(t, string(se.Body), "service unavailable")
+	assert.Contains(t, err.Error(), "could not connect to stream")
+}
+
+// TestStreamErrorBodyCappedAt512 verifies that StreamError.Body captures at
+// most 512 bytes of the response body.
+func TestStreamErrorBodyCappedAt512(t *testing.T) {
+	bigBody := bytes.Repeat([]byte("x"), 1024)
+	tsrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusBadGateway)
+		_, _ = w.Write(bigBody)
+	}))
+	defer tsrv.Close()
+
+	c := NewClient(tsrv.URL)
+	c.ReconnectStrategy = backoff.WithMaxRetries(backoff.NewExponentialBackOff(), 0)
+
+	err := c.SubscribeRaw(func(ev *Event) {})
+	require.Error(t, err)
+
+	var se *StreamError
+	require.True(t, errors.As(err, &se))
+	assert.LessOrEqual(t, len(se.Body), 512, "StreamError.Body must be capped at 512 bytes")
+}
+
+// TestStreamErrorViaChanSubscribe verifies that SubscribeChanWithContext also
+// returns a *StreamError-wrapped error on non-200.
+func TestStreamErrorViaChanSubscribe(t *testing.T) {
+	tsrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusForbidden)
+		_, _ = w.Write([]byte("forbidden"))
+	}))
+	defer tsrv.Close()
+
+	c := NewClient(tsrv.URL)
+	c.ReconnectStrategy = backoff.WithMaxRetries(backoff.NewExponentialBackOff(), 0)
+
+	ch := make(chan *Event)
+	err := c.SubscribeChan("", ch)
+	require.Error(t, err)
+
+	var se *StreamError
+	require.True(t, errors.As(err, &se), "expected *StreamError, got: %T: %v", err, err)
+	assert.Equal(t, http.StatusForbidden, se.StatusCode)
+}
+
+// --- sse-6v2: OnConnect fires immediately after HTTP handshake ---
+
+// TestOnConnectFiresWithoutEvents verifies that the OnConnect callback fires
+// even when the server sends no events — it must fire as soon as the HTTP
+// 200+text/event-stream response is received, not when the first event arrives.
+func TestOnConnectFiresWithoutEvents(t *testing.T) {
+	// Server holds the connection open but never sends any events.
+	tsrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		w.Header().Set("Cache-Control", "no-cache")
+		w.WriteHeader(http.StatusOK)
+		w.(http.Flusher).Flush()
+		// Hold open until client disconnects.
+		<-r.Context().Done()
+	}))
+	defer tsrv.Close()
+
+	ctx, cancel := context.WithCancel(context.Background())
+
+	c := NewClient(tsrv.URL)
+	connected := make(chan struct{}, 1)
+	c.OnConnect(func(cl *Client) {
+		select {
+		case connected <- struct{}{}:
+		default:
+		}
+	})
+
+	go c.SubscribeRawWithContext(ctx, func(msg *Event) {})
+
+	// OnConnect must fire within 500ms even though the server sends no events.
+	select {
+	case <-connected:
+		// good — callback fired without needing an event
+	case <-time.After(500 * time.Millisecond):
+		t.Fatal("OnConnect did not fire within 500ms; server sent no events")
+	}
+
+	cancel()
+}
+
+// TestOnConnectFiresBeforeFirstEvent verifies that the OnConnect callback fires
+// before any events are dispatched to the handler.
+func TestOnConnectFiresBeforeFirstEvent(t *testing.T) {
+	tsrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		w.Header().Set("Cache-Control", "no-cache")
+		w.WriteHeader(http.StatusOK)
+		w.(http.Flusher).Flush()
+		// Small delay then send an event.
+		time.Sleep(100 * time.Millisecond)
+		fmt.Fprint(w, "data: hello\n\n")
+		w.(http.Flusher).Flush()
+		<-r.Context().Done()
+	}))
+	defer tsrv.Close()
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	c := NewClient(tsrv.URL)
+
+	var order []string
+	var orderMu sync.Mutex
+	addOrder := func(s string) {
+		orderMu.Lock()
+		order = append(order, s)
+		orderMu.Unlock()
+	}
+
+	eventReceived := make(chan struct{}, 1)
+	c.OnConnect(func(cl *Client) {
+		addOrder("connect")
+	})
+
+	go c.SubscribeRawWithContext(ctx, func(msg *Event) {
+		addOrder("event")
+		select {
+		case eventReceived <- struct{}{}:
+		default:
+		}
+	})
+
+	select {
+	case <-eventReceived:
+	case <-time.After(3 * time.Second):
+		t.Fatal("timed out waiting for event")
+	}
+
+	orderMu.Lock()
+	got := append([]string(nil), order...)
+	orderMu.Unlock()
+
+	require.GreaterOrEqual(t, len(got), 2)
+	assert.Equal(t, "connect", got[0], "OnConnect must fire before the first event handler call; order: %v", got)
+	assert.Equal(t, "event", got[1])
+}
+
+// --- sse-fyk: io.ErrUnexpectedEOF treated like io.EOF (silent reconnect) ---
+
+// TestUnexpectedEOFDoesNotFireDisconnect verifies that when readLoop receives
+// io.ErrUnexpectedEOF the disconnect callback is NOT called, but the error IS
+// forwarded to erChan so that backoff can trigger a reconnect.
+func TestUnexpectedEOFDoesNotFireDisconnect(t *testing.T) {
+	c := NewClient("http://localhost")
+
+	disconnectCalled := make(chan struct{}, 1)
+	c.OnDisconnect(func(cl *Client) {
+		select {
+		case disconnectCalled <- struct{}{}:
+		default:
+		}
+	})
+
+	// A reader that immediately returns io.ErrUnexpectedEOF.
+	pr, pw := io.Pipe()
+	_ = pw.CloseWithError(io.ErrUnexpectedEOF)
+
+	reader := NewEventStreamReader(pr, 4096)
+	_, erChan := c.startReadLoop(context.Background(), reader)
+
+	// erChan must receive the error (reconnect path).
+	select {
+	case err := <-erChan:
+		assert.Equal(t, io.ErrUnexpectedEOF, err, "erChan must receive io.ErrUnexpectedEOF")
+	case <-time.After(time.Second):
+		t.Fatal("timed out waiting for erChan to receive io.ErrUnexpectedEOF")
+	}
+
+	// disconnectcb must NOT have been called.
+	select {
+	case <-disconnectCalled:
+		t.Fatal("disconnectcb must not be called for io.ErrUnexpectedEOF")
+	case <-time.After(50 * time.Millisecond):
+		// good
+	}
 }

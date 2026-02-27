@@ -2,17 +2,19 @@
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
 
-package sse
+package sse_test
 
 import (
 	"testing"
 
 	"github.com/stretchr/testify/assert"
+
+	sse "github.com/joshuafuller/sse/v3"
 )
 
 func TestEventLog(t *testing.T) {
-	ev := &EventLog{}
-	testEvent := &Event{Data: []byte("test")}
+	ev := &sse.EventLog{}
+	testEvent := &sse.Event{Data: []byte("test")}
 
 	ev.Add(testEvent)
 	ev.Clear()
@@ -26,10 +28,10 @@ func TestEventLog(t *testing.T) {
 }
 
 func TestEventLogMaxEntries(t *testing.T) {
-	ev := &EventLog{MaxEntries: 5}
+	ev := &sse.EventLog{MaxEntries: 5}
 
 	for i := 0; i < 10; i++ {
-		ev.Add(&Event{Data: []byte("event")})
+		ev.Add(&sse.Event{Data: []byte("event")})
 	}
 
 	assert.Equal(t, 5, ev.Len())

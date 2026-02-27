@@ -2,6 +2,11 @@
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
 
+// Package sse — white-box test file (sse-4pn).
+// Cannot migrate to package sse_test because the tests access unexported
+// identifiers: newStream (func), Stream.addSubscriber (method),
+// Stream.deregister (field), Subscriber.connection (field),
+// Stream.getSubscriberCount (method).
 package sse
 
 import (
