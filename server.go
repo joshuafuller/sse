@@ -160,6 +160,12 @@ func (s *Server) GetStream(id string) *Stream {
 }
 
 func (s *Server) process(event *Event) *Event {
+	// Stamp the publish time unconditionally so the EventTTL check in
+	// ServeHTTP has a valid baseline even when AutoReplay=false (sse-6rd).
+	// EventLog.Add() will overwrite this with the same approximate time when
+	// AutoReplay=true, which is harmless.
+	event.timestamp = time.Now()
+
 	if s.EncodeBase64 {
 		output := make([]byte, base64.StdEncoding.EncodedLen(len(event.Data)))
 		base64.StdEncoding.Encode(output, event.Data)

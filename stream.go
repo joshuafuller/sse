@@ -39,6 +39,11 @@ type Stream struct {
 	OnSubscribe   func(streamID string, sub *Subscriber)
 	OnUnsubscribe func(streamID string, sub *Subscriber)
 
+	// subscriberBuf is the capacity of each new subscriber's connection
+	// channel. Set from Server.BufferSize via newStream so subscriber
+	// channels scale with the stream's event buffer (sse-jzn).
+	subscriberBuf int
+
 	// mu protects the per-stream callback fields below.
 	mu sync.RWMutex
 
@@ -79,6 +84,7 @@ func newStream(id string, buffSize int, replay, isAutoStream bool, onSubscribe, 
 		Eventlog:      EventLog{},
 		OnSubscribe:   onSubscribe,
 		OnUnsubscribe: onUnsubscribe,
+		subscriberBuf: buffSize,
 	}
 }
 
@@ -163,7 +169,7 @@ func (str *Stream) addSubscriber(eventid int, url *url.URL) (*Subscriber, bool) 
 		eventid:    eventid,
 		quit:       str.deregister,
 		streamQuit: str.quit,
-		connection: make(chan *Event, 64),
+		connection: make(chan *Event, str.subscriberBuf),
 		URL:        url,
 	}
 

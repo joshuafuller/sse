@@ -341,3 +341,4 @@ func TestSubscriberDeregisterOnDisconnect(t *testing.T) {
 	assert.LessOrEqual(t, runtime.NumGoroutine(), goroutinesBeforeClose,
 		"goroutine count should not exceed pre-close baseline")
 }
+

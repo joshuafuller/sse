@@ -1033,3 +1033,50 @@ func TestClientCommentLinesIgnored(t *testing.T) {
 		t.Fatal("timed out waiting for data event")
 	}
 }
+
+// TestEventTTLWithAutoReplayFalse is a regression test for sse-6rd.
+// When AutoReplay=false, EventLog.Add() is never called so ev.timestamp stays
+// at its zero value. The TTL check in ServeHTTP then computes
+// time.Now().After(zero + TTL), which is always true, silently dropping every
+// event. The fix: server.process() must stamp ev.timestamp so the check has a
+// real publish time regardless of AutoReplay.
+func TestEventTTLWithAutoReplayFalse(t *testing.T) {
+	s := sse.New()
+	s.AutoReplay = false
+	s.EventTTL = time.Second // fresh events must never exceed this age
+
+	mux := http.NewServeMux()
+	mux.HandleFunc("/events", s.ServeHTTP)
+	srv := httptest.NewServer(mux)
+	defer srv.Close()
+	defer s.Close()
+
+	s.CreateStream("ttl-test")
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	c := sse.NewClient(srv.URL + "/events")
+	c.ReconnectStrategy = backoff.NewConstantBackOff(50 * time.Millisecond)
+
+	received := make(chan *sse.Event, 4)
+	go func() { _ = c.SubscribeChanWithContext(ctx, "ttl-test", received) }()
+
+	// Wait for the subscriber to connect.
+	require.Eventually(t, func() bool {
+		return s.GetStream("ttl-test") != nil &&
+			s.GetStream("ttl-test").SubscriberCount() > 0
+	}, time.Second, 10*time.Millisecond, "subscriber did not connect")
+
+	// Publish a fresh event. With the bug ev.timestamp == zero so ServeHTTP
+	// treats the event as expired and drops it; the client never receives it.
+	s.Publish("ttl-test", &sse.Event{Data: []byte("hello")})
+
+	select {
+	case ev := <-received:
+		assert.Equal(t, []byte("hello"), ev.Data,
+			"freshly-published event must not be dropped when AutoReplay=false and EventTTL is set (sse-6rd)")
+	case <-time.After(2 * time.Second):
+		t.Fatal("timed out: event was silently dropped — EventTTL bug with AutoReplay=false (sse-6rd)")
+	}
+}

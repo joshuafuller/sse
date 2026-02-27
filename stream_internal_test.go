@@ -205,3 +205,45 @@ func TestStreamMaxSubscribersRejected(t *testing.T) {
 	assert.False(t, ok3, "third subscriber must be rejected when at MaxSubscribers=2")
 	assert.Nil(t, sub3)
 }
+
+// TestReplayDoesNotBlockOnSlowSubscriber verifies sse-xua:
+// EventLog.Replay() previously did a direct blocking send into the
+// subscriber's connection channel. If the channel was full, Replay would
+// stall indefinitely inside the stream's run() goroutine, preventing all
+// other events from being dispatched.
+//
+// The fix: Replay uses a non-blocking select so slow subscribers are skipped
+// rather than blocking the goroutine.
+//
+// We do NOT call s.run() so we can call Replay directly from this goroutine
+// without any concurrent draining.
+func TestReplayDoesNotBlockOnSlowSubscriber(t *testing.T) {
+	s := newStream("test", 1024, true, false, nil, nil)
+	// Do NOT call s.run() — we invoke Replay directly.
+
+	// Add an event to the log manually.
+	s.Eventlog.Add(&Event{Data: []byte("replayed")})
+
+	// Build a subscriber whose connection channel is already full.
+	sub := &Subscriber{
+		quit:       s.deregister,
+		streamQuit: s.quit,
+		connection: make(chan *Event, 1),
+	}
+	// Fill the connection channel to capacity so a blocking send would stall.
+	sub.connection <- &Event{Data: []byte("filler")}
+
+	// Replay must return promptly — not block on the full channel.
+	done := make(chan struct{})
+	go func() {
+		s.Eventlog.Replay(sub)
+		close(done)
+	}()
+
+	select {
+	case <-done:
+		// Good — Replay returned without blocking.
+	case <-time.After(2 * time.Second):
+		t.Fatal("Replay blocked on a full subscriber channel — sse-xua not fixed")
+	}
+}

@@ -1,0 +1,1513 @@
+
+<!DOCTYPE html>
+<html>
+	<head>
+		<meta http-equiv="Content-Type" content="text/html; charset=utf-8">
+		<title>v3: Go Coverage Report</title>
+		<style>
+			body {
+				background: black;
+				color: rgb(80, 80, 80);
+			}
+			body, pre, #legend span {
+				font-family: Menlo, monospace;
+				font-weight: bold;
+			}
+			#topbar {
+				background: black;
+				position: fixed;
+				top: 0; left: 0; right: 0;
+				height: 42px;
+				border-bottom: 1px solid rgb(80, 80, 80);
+			}
+			#content {
+				margin-top: 50px;
+			}
+			#nav, #legend {
+				float: left;
+				margin-left: 10px;
+			}
+			#legend {
+				margin-top: 12px;
+			}
+			#nav {
+				margin-top: 10px;
+			}
+			#legend span {
+				margin: 0 5px;
+			}
+			.cov0 { color: rgb(192, 0, 0) }
+.cov1 { color: rgb(128, 128, 128) }
+.cov2 { color: rgb(116, 140, 131) }
+.cov3 { color: rgb(104, 152, 134) }
+.cov4 { color: rgb(92, 164, 137) }
+.cov5 { color: rgb(80, 176, 140) }
+.cov6 { color: rgb(68, 188, 143) }
+.cov7 { color: rgb(56, 200, 146) }
+.cov8 { color: rgb(44, 212, 149) }
+.cov9 { color: rgb(32, 224, 152) }
+.cov10 { color: rgb(20, 236, 155) }
+
+		</style>
+	</head>
+	<body>
+		<div id="topbar">
+			<div id="nav">
+				<select id="files">
+				
+				<option value="file0">github.com/joshuafuller/sse/v3/client.go (90.3%)</option>
+				
+				<option value="file1">github.com/joshuafuller/sse/v3/event.go (100.0%)</option>
+				
+				<option value="file2">github.com/joshuafuller/sse/v3/event_log.go (100.0%)</option>
+				
+				<option value="file3">github.com/joshuafuller/sse/v3/http.go (92.9%)</option>
+				
+				<option value="file4">github.com/joshuafuller/sse/v3/server.go (75.0%)</option>
+				
+				<option value="file5">github.com/joshuafuller/sse/v3/stream.go (93.8%)</option>
+				
+				<option value="file6">github.com/joshuafuller/sse/v3/subscriber.go (100.0%)</option>
+				
+				</select>
+			</div>
+			<div id="legend">
+				<span>not tracked</span>
+			
+				<span class="cov0">no coverage</span>
+				<span class="cov1">low coverage</span>
+				<span class="cov2">*</span>
+				<span class="cov3">*</span>
+				<span class="cov4">*</span>
+				<span class="cov5">*</span>
+				<span class="cov6">*</span>
+				<span class="cov7">*</span>
+				<span class="cov8">*</span>
+				<span class="cov9">*</span>
+				<span class="cov10">high coverage</span>
+			
+			</div>
+		</div>
+		<div id="content">
+		
+		<pre class="file" id="file0" style="display: none">/* This Source Code Form is subject to the terms of the Mozilla Public
+ * License, v. 2.0. If a copy of the MPL was not distributed with this
+ * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
+
+package sse
+
+import (
+        "bytes"
+        "context"
+        "encoding/base64"
+        "errors"
+        "fmt"
+        "io"
+        "mime"
+        "net/http"
+        "strconv"
+        "sync"
+        "sync/atomic"
+        "time"
+
+        backoff "github.com/cenkalti/backoff/v4"
+)
+
+var (
+        headerID    = []byte("id:")
+        headerData  = []byte("data:")
+        headerEvent = []byte("event:")
+        headerRetry = []byte("retry:")
+)
+
+// StreamError is returned when the server responds with a non-200 HTTP status.
+// Callers can inspect the status code and raw body via errors.As.
+type StreamError struct {
+        StatusCode int
+        Body       []byte // first 512 bytes of the response body
+}
+
+func (e *StreamError) Error() string <span class="cov6" title="27">{
+        return fmt.Sprintf("could not connect to stream: %s", http.StatusText(e.StatusCode))
+}</span>
+
+func ClientMaxBufferSize(s int) func(c *Client) <span class="cov2" title="2">{
+        return func(c *Client) </span><span class="cov2" title="2">{
+                c.maxBufferSize = s
+        }</span>
+}
+
+// ConnCallback defines a function to be called on a particular connection event
+type ConnCallback func(c *Client)
+
+// ResponseValidator validates a response
+type ResponseValidator func(c *Client, resp *http.Response) error
+
+// Client handles an incoming server stream
+type Client struct {
+        Retry time.Time
+
+        // ReconnectStrategy controls how the client retries failed or dropped
+        // connections. If nil, a default backoff.NewExponentialBackOff() is used,
+        // which retries with exponential delay but stops permanently after 15
+        // minutes (MaxElapsedTime = 15 * time.Minute).
+        //
+        // To retry indefinitely, set an explicit strategy with MaxElapsedTime = 0:
+        //
+        //        b := backoff.NewExponentialBackOff()
+        //        b.MaxElapsedTime = 0 // 0 means no time limit
+        //        client.ReconnectStrategy = b
+        ReconnectStrategy backoff.BackOff
+
+        // Method is the HTTP method used for SSE requests. Defaults to GET when
+        // empty.
+        Method string
+
+        // Body is an optional factory function called before each request attempt
+        // (including reconnects) to produce a fresh io.Reader for the request body.
+        // A factory is used rather than a plain io.Reader so that reconnects always
+        // read the body from the start. If nil, no body is sent.
+        Body func() io.Reader
+
+        disconnectcb      ConnCallback
+        connectedcb       ConnCallback
+        subscribed        map[chan *Event]chan struct{}
+        Headers           map[string]string
+        ReconnectNotify   backoff.Notify
+        ResponseValidator ResponseValidator
+        Connection        *http.Client
+        URL               string
+        LastEventID       atomic.Value // []byte
+        maxBufferSize     int
+        mu                sync.Mutex
+        retryDelay        time.Duration
+        EncodingBase64    bool
+        Connected         bool
+}
+
+// NewClient creates a new client
+func NewClient(url string, opts ...func(c *Client)) *Client <span class="cov7" title="61">{
+        c := &amp;Client{
+                URL:           url,
+                Connection:    &amp;http.Client{},
+                Headers:       make(map[string]string),
+                subscribed:    make(map[chan *Event]chan struct{}),
+                maxBufferSize: 1 &lt;&lt; 16,
+        }
+
+        for _, opt := range opts </span><span class="cov2" title="2">{
+                opt(c)
+        }</span>
+
+        <span class="cov7" title="61">return c</span>
+}
+
+// Subscribe connects to a named SSE stream and calls handler for each event.
+// It blocks until the server stops retrying (see ReconnectStrategy).
+// By default, reconnection uses backoff.NewExponentialBackOff() which stops
+// after 15 minutes; set ReconnectStrategy with MaxElapsedTime = 0 to retry
+// indefinitely.
+func (c *Client) Subscribe(stream string, handler func(msg *Event)) error <span class="cov6" title="29">{
+        return c.SubscribeWithContext(context.Background(), stream, handler)
+}</span>
+
+// SubscribeWithContext connects to a named SSE stream and calls handler for
+// each received event. It blocks until ctx is cancelled, the server sends HTTP
+// 204, or the reconnect strategy gives up.
+//
+// Reconnect behaviour: on any connection error or EOF the client waits
+// according to ReconnectStrategy before reconnecting. If ReconnectStrategy is
+// nil a default backoff.NewExponentialBackOff() is used, which stops after 15
+// minutes. Cancelling ctx always terminates the subscription immediately.
+func (c *Client) SubscribeWithContext(ctx context.Context, stream string, handler func(msg *Event)) error <span class="cov7" title="45">{
+        // Apply user specified reconnection strategy or default to standard NewExponentialBackOff() reconnection method.
+        // Wrap with context so cancellation stops the retry loop.
+        var b backoff.BackOff
+        if c.ReconnectStrategy != nil </span><span class="cov6" title="22">{
+                b = backoff.WithContext(c.ReconnectStrategy, ctx)
+        }</span> else<span class="cov6" title="23"> {
+                eb := backoff.NewExponentialBackOff()
+                c.mu.Lock()
+                if c.retryDelay &gt; 0 </span><span class="cov0" title="0">{
+                        eb.InitialInterval = c.retryDelay
+                }</span>
+                <span class="cov6" title="23">c.mu.Unlock()
+                b = backoff.WithContext(eb, ctx)</span>
+        }
+
+        <span class="cov7" title="45">operation := func() error </span><span class="cov8" title="84">{
+                resp, err := c.request(ctx, stream)
+                if err != nil </span><span class="cov5" title="18">{
+                        return err
+                }</span>
+                <span class="cov7" title="66">defer func() </span><span class="cov7" title="65">{ _ = resp.Body.Close() }</span>()
+
+                <span class="cov7" title="66">if validator := c.ResponseValidator; validator != nil </span><span class="cov1" title="1">{
+                        err = validator(c, resp)
+                        if err != nil </span><span class="cov1" title="1">{
+                                return err
+                        }</span>
+                } else<span class="cov7" title="65"> {
+                        if resp.StatusCode == http.StatusNoContent </span><span class="cov2" title="2">{
+                                return backoff.Permanent(fmt.Errorf("server returned 204 No Content: reconnection disabled"))
+                        }</span>
+                        <span class="cov7" title="63">if resp.StatusCode != http.StatusOK </span><span class="cov6" title="23">{
+                                body := make([]byte, 512)
+                                n, _ := io.ReadFull(resp.Body, body)
+                                return fmt.Errorf("%w", &amp;StreamError{StatusCode: resp.StatusCode, Body: body[:n]})
+                        }</span>
+                        <span class="cov6" title="40">ct := resp.Header.Get("Content-Type")
+                        mediaType, _, _ := mime.ParseMediaType(ct)
+                        if mediaType != "text/event-stream" </span><span class="cov1" title="1">{
+                                return backoff.Permanent(fmt.Errorf("invalid content-type %q: expected text/event-stream", ct))
+                        }</span>
+                }
+
+                <span class="cov6" title="39">if !c.Connected &amp;&amp; c.connectedcb != nil </span><span class="cov2" title="3">{
+                        c.Connected = true
+                        c.connectedcb(c)
+                }</span>
+
+                <span class="cov6" title="39">b.Reset()
+                reader := NewEventStreamReader(resp.Body, c.maxBufferSize)
+                eventChan, errorChan := c.startReadLoop(ctx, reader)
+
+                for </span><span class="cov8" title="111">{
+                        select </span>{
+                        case err = &lt;-errorChan:<span class="cov6" title="38">
+                                return err</span>
+                        case msg := &lt;-eventChan:<span class="cov7" title="73">
+                                handler(msg)</span>
+                        }
+                }
+        }
+
+        <span class="cov7" title="45">return backoff.RetryNotify(operation, b, c.ReconnectNotify)</span>
+}
+
+// SubscribeChan sends all events to the provided channel
+func (c *Client) SubscribeChan(stream string, ch chan *Event) error <span class="cov4" title="11">{
+        return c.SubscribeChanWithContext(context.Background(), stream, ch)
+}</span>
+
+// SubscribeChanWithContext sends all events to the provided channel with context
+func (c *Client) SubscribeChanWithContext(ctx context.Context, stream string, ch chan *Event) error <span class="cov5" title="12">{
+        var connected bool
+        errch := make(chan error)
+        c.mu.Lock()
+        c.subscribed[ch] = make(chan struct{}, 1)
+        c.mu.Unlock()
+
+        go func() </span><span class="cov5" title="12">{
+                defer c.cleanup(ch)
+                // Apply user specified reconnection strategy or default to standard NewExponentialBackOff() reconnection method.
+                // Wrap with context so cancellation stops the retry loop.
+                var b backoff.BackOff
+                if c.ReconnectStrategy != nil </span><span class="cov2" title="2">{
+                        b = backoff.WithContext(c.ReconnectStrategy, ctx)
+                }</span> else<span class="cov4" title="10"> {
+                        eb := backoff.NewExponentialBackOff()
+                        c.mu.Lock()
+                        if c.retryDelay &gt; 0 </span><span class="cov0" title="0">{
+                                eb.InitialInterval = c.retryDelay
+                        }</span>
+                        <span class="cov4" title="10">c.mu.Unlock()
+                        b = backoff.WithContext(eb, ctx)</span>
+                }
+
+                <span class="cov5" title="12">operation := func() error </span><span class="cov5" title="16">{
+                        resp, err := c.request(ctx, stream)
+                        if err != nil </span><span class="cov0" title="0">{
+                                return err
+                        }</span>
+                        <span class="cov5" title="16">defer func() </span><span class="cov5" title="16">{ _ = resp.Body.Close() }</span>()
+
+                        <span class="cov5" title="16">if validator := c.ResponseValidator; validator != nil </span><span class="cov0" title="0">{
+                                err = validator(c, resp)
+                                if err != nil </span><span class="cov0" title="0">{
+                                        return err
+                                }</span>
+                        } else<span class="cov5" title="16"> {
+                                if resp.StatusCode == http.StatusNoContent </span><span class="cov0" title="0">{
+                                        return backoff.Permanent(fmt.Errorf("server returned 204 No Content: reconnection disabled"))
+                                }</span>
+                                <span class="cov5" title="16">if resp.StatusCode != http.StatusOK </span><span class="cov3" title="4">{
+                                        body := make([]byte, 512)
+                                        n, _ := io.ReadFull(resp.Body, body)
+                                        return fmt.Errorf("%w", &amp;StreamError{StatusCode: resp.StatusCode, Body: body[:n]})
+                                }</span>
+                                <span class="cov5" title="12">ct := resp.Header.Get("Content-Type")
+                                mediaType, _, _ := mime.ParseMediaType(ct)
+                                if mediaType != "text/event-stream" </span><span class="cov0" title="0">{
+                                        return backoff.Permanent(fmt.Errorf("invalid content-type %q: expected text/event-stream", ct))
+                                }</span>
+                        }
+
+                        <span class="cov5" title="12">if !c.Connected &amp;&amp; c.connectedcb != nil </span><span class="cov0" title="0">{
+                                c.Connected = true
+                                c.connectedcb(c)
+                        }</span>
+
+                        <span class="cov5" title="12">if !connected </span><span class="cov4" title="11">{
+                                // Notify connect
+                                errch &lt;- nil
+                                connected = true
+                        }</span>
+
+                        <span class="cov5" title="12">b.Reset()
+                        reader := NewEventStreamReader(resp.Body, c.maxBufferSize)
+                        eventChan, errorChan := c.startReadLoop(ctx, reader)
+
+                        for </span><span class="cov6" title="33">{
+                                var msg *Event
+                                // Wait for message to arrive or exit
+                                select </span>{
+                                case &lt;-c.subscribed[ch]:<span class="cov3" title="6">
+                                        return nil</span>
+                                case err = &lt;-errorChan:<span class="cov3" title="4">
+                                        return err</span>
+                                case msg = &lt;-eventChan:<span class="cov6" title="23"></span>
+                                }
+
+                                // Wait for message to be sent or exit
+                                <span class="cov6" title="23">if msg != nil </span><span class="cov6" title="23">{
+                                        select </span>{
+                                        case &lt;-c.subscribed[ch]:<span class="cov2" title="2">
+                                                return nil</span>
+                                        case ch &lt;- msg:<span class="cov5" title="21"></span>
+                                                // message sent
+                                        }
+                                }
+                        }
+                }
+
+                <span class="cov5" title="12">err := backoff.RetryNotify(operation, b, c.ReconnectNotify)
+
+                // channel closed once connected
+                if err != nil &amp;&amp; !connected </span><span class="cov1" title="1">{
+                        errch &lt;- err
+                }</span>
+        }()
+        <span class="cov5" title="12">err := &lt;-errch
+        close(errch)
+        return err</span>
+}
+
+func (c *Client) startReadLoop(ctx context.Context, reader *EventStreamReader) (chan *Event, chan error) <span class="cov7" title="54">{
+        outCh := make(chan *Event)
+        erChan := make(chan error, 1)
+        go c.readLoop(ctx, reader, outCh, erChan)
+        return outCh, erChan
+}</span>
+
+func (c *Client) readLoop(ctx context.Context, reader *EventStreamReader, outCh chan *Event, erChan chan error) <span class="cov7" title="54">{
+        for </span><span class="cov9" title="159">{
+                // Check for context cancellation before each read attempt.
+                select </span>{
+                case &lt;-ctx.Done():<span class="cov1" title="1">
+                        erChan &lt;- ctx.Err()
+                        return</span>
+                default:<span class="cov9" title="158"></span>
+                }
+
+                // Read each new line and process the type of event
+                <span class="cov9" title="158">event, err := reader.ReadEvent()
+                if err != nil </span><span class="cov7" title="49">{
+                        if err == io.EOF || err == io.ErrUnexpectedEOF </span><span class="cov7" title="42">{
+                                // EOF and ErrUnexpectedEOF both trigger a silent reconnect via
+                                // backoff. Do not fire disconnectcb — a transient keepalive
+                                // timeout is not a real disconnect.
+                                erChan &lt;- err
+                                return
+                        }</span>
+                        // run user specified disconnect function
+                        <span class="cov4" title="7">if c.disconnectcb != nil </span><span class="cov1" title="1">{
+                                c.Connected = false
+                                c.disconnectcb(c)
+                        }</span>
+                        <span class="cov4" title="7">erChan &lt;- err
+                        return</span>
+                }
+
+                // If we get an error, ignore it.
+                <span class="cov8" title="109">var msg *Event
+                if msg, err = c.processEvent(event); err == nil </span><span class="cov8" title="109">{
+                        if msg.IDPresent </span><span class="cov8" title="77">{
+                                // id: field was explicitly present; store the value (may be empty)
+                                c.LastEventID.Store(msg.ID)
+                        }</span> else<span class="cov6" title="32"> {
+                                // No id: field; inherit previous LastEventID for the event struct only
+                                msg.ID, _ = c.LastEventID.Load().([]byte)
+                        }</span>
+
+                        // Apply retry: field if it contains only ASCII digits.
+                        <span class="cov8" title="109">if len(msg.Retry) &gt; 0 </span><span class="cov2" title="2">{
+                                if n, err := strconv.ParseInt(string(msg.Retry), 10, 64); err == nil </span><span class="cov1" title="1">{
+                                        c.mu.Lock()
+                                        c.retryDelay = time.Duration(n) * time.Millisecond
+                                        c.mu.Unlock()
+                                }</span>
+                        }
+
+                        // Per WHATWG spec: if the data buffer is empty, do not dispatch
+                        // the event. ID-only events update LastEventID above but must
+                        // not be sent downstream.
+                        <span class="cov8" title="109">if len(msg.Data) &gt; 0 || len(msg.Event) &gt; 0 || len(msg.Retry) &gt; 0 </span><span class="cov8" title="100">{
+                                outCh &lt;- msg
+                        }</span>
+                }
+
+                // Check for context cancellation after each successful event dispatch.
+                <span class="cov8" title="106">select </span>{
+                case &lt;-ctx.Done():<span class="cov1" title="1">
+                        erChan &lt;- ctx.Err()
+                        return</span>
+                default:<span class="cov8" title="105"></span>
+                }
+        }
+}
+
+// SubscribeRaw to an sse endpoint
+func (c *Client) SubscribeRaw(handler func(msg *Event)) error <span class="cov5" title="20">{
+        return c.Subscribe("", handler)
+}</span>
+
+// SubscribeRawWithContext to an sse endpoint with context
+func (c *Client) SubscribeRawWithContext(ctx context.Context, handler func(msg *Event)) error <span class="cov3" title="5">{
+        return c.SubscribeWithContext(ctx, "", handler)
+}</span>
+
+// SubscribeChanRaw sends all events to the provided channel
+func (c *Client) SubscribeChanRaw(ch chan *Event) error <span class="cov0" title="0">{
+        return c.SubscribeChan("", ch)
+}</span>
+
+// SubscribeChanRawWithContext sends all events to the provided channel with context
+func (c *Client) SubscribeChanRawWithContext(ctx context.Context, ch chan *Event) error <span class="cov0" title="0">{
+        return c.SubscribeChanWithContext(ctx, "", ch)
+}</span>
+
+// Unsubscribe unsubscribes a channel
+func (c *Client) Unsubscribe(ch chan *Event) <span class="cov4" title="11">{
+        c.mu.Lock()
+        defer c.mu.Unlock()
+
+        if c.subscribed[ch] != nil </span><span class="cov4" title="11">{
+                select </span>{
+                case c.subscribed[ch] &lt;- struct{}{}:<span class="cov4" title="11"></span>
+                default:<span class="cov0" title="0"></span>
+                        // already signalled; goroutine will pick it up when it next enters select
+                }
+        }
+}
+
+// OnDisconnect specifies the function to run when the connection disconnects
+func (c *Client) OnDisconnect(fn ConnCallback) <span class="cov2" title="2">{
+        c.disconnectcb = fn
+}</span>
+
+// OnConnect specifies the function to run when the connection is successful
+func (c *Client) OnConnect(fn ConnCallback) <span class="cov2" title="3">{
+        c.connectedcb = fn
+}</span>
+
+func (c *Client) request(ctx context.Context, stream string) (*http.Response, error) <span class="cov8" title="100">{
+        method := c.Method
+        if method == "" </span><span class="cov8" title="95">{
+                method = http.MethodGet
+        }</span>
+        <span class="cov8" title="100">var body io.Reader
+        if c.Body != nil </span><span class="cov3" title="5">{
+                body = c.Body()
+        }</span>
+        <span class="cov8" title="100">req, err := http.NewRequest(method, c.URL, body)
+        if err != nil </span><span class="cov2" title="2">{
+                return nil, fmt.Errorf("create request: %w", err)
+        }</span>
+        <span class="cov8" title="98">req = req.WithContext(ctx)
+
+        // Setup request, specify stream to connect to
+        if stream != "" </span><span class="cov7" title="52">{
+                query := req.URL.Query()
+                query.Add("stream", stream)
+                req.URL.RawQuery = query.Encode()
+        }</span>
+
+        <span class="cov8" title="98">req.Header.Set("Cache-Control", "no-cache")
+        req.Header.Set("Accept", "text/event-stream")
+        req.Header.Set("Connection", "keep-alive")
+
+        lastID, exists := c.LastEventID.Load().([]byte)
+        if exists &amp;&amp; lastID != nil </span><span class="cov6" title="33">{
+                // Per WHATWG SSE §9.2.1 / WHATWG Fetch §2.2: the Last-Event-ID header
+                // value MUST NOT contain U+0000 NULL, U+000A LF, or U+000D CR.  Strip
+                // any such characters before setting the header; if nothing survives,
+                // omit the header entirely (net/http rejects headers with these bytes).
+                safe := bytes.Map(func(r rune) rune </span><span class="cov7" title="49">{
+                        if r == 0 || r == '\n' || r == '\r' </span><span class="cov3" title="6">{
+                                return -1 // drop
+                        }</span>
+                        <span class="cov7" title="43">return r</span>
+                }, lastID)
+                <span class="cov6" title="33">if len(safe) &gt; 0 </span><span class="cov6" title="32">{
+                        req.Header.Set("Last-Event-ID", string(safe))
+                }</span>
+        }
+
+        // Add user specified headers
+        <span class="cov8" title="98">for k, v := range c.Headers </span><span class="cov0" title="0">{
+                req.Header.Set(k, v)
+        }</span>
+
+        <span class="cov8" title="98">resp, err := c.Connection.Do(req)
+        if err != nil </span><span class="cov5" title="16">{
+                return nil, fmt.Errorf("do request: %w", err)
+        }</span>
+        <span class="cov8" title="82">return resp, nil</span>
+}
+
+// splitLines splits SSE event bytes into individual field lines following the
+// WHATWG SSE §9.2.6 line-ending rules:
+//   - CR immediately followed by LF (\r\n) is a SINGLE line ending (not two).
+//   - Bare LF (\n) is a single line ending.
+//   - Bare CR (\r) is a single line ending.
+//
+// Unlike bytes.FieldsFunc (which collapses consecutive separator characters),
+// splitLines preserves empty lines and advances exactly the right number of bytes
+// per line ending, making the spec compliance explicit and unambiguous.
+func splitLines(data []byte) [][]byte <span class="cov8" title="121">{
+        var lines [][]byte
+        for len(data) &gt; 0 </span><span class="cov10" title="258">{
+                idx := bytes.IndexAny(data, "\r\n")
+                if idx &lt; 0 </span><span class="cov8" title="115">{
+                        lines = append(lines, data)
+                        break</span>
+                }
+                <span class="cov9" title="143">lines = append(lines, data[:idx])
+                if data[idx] == '\r' &amp;&amp; idx+1 &lt; len(data) &amp;&amp; data[idx+1] == '\n' </span><span class="cov4" title="7">{
+                        data = data[idx+2:] // consume CRLF as one line ending
+                }</span> else<span class="cov8" title="136"> {
+                        data = data[idx+1:] // consume bare CR or bare LF as one line ending
+                }</span>
+        }
+        <span class="cov8" title="121">return lines</span>
+}
+
+func (c *Client) processEvent(msg []byte) (event *Event, err error) <span class="cov8" title="121">{
+        var e Event
+
+        if len(msg) &lt; 1 </span><span class="cov0" title="0">{
+                return nil, errors.New("event message was empty")
+        }</span>
+
+        // Split the event block into individual field lines.
+        // splitLines treats \r\n as a SINGLE line ending per WHATWG SSE §9.2.6 (WP-004),
+        // unlike bytes.FieldsFunc which collapses consecutive \r and \n characters.
+        <span class="cov8" title="121">for _, line := range splitLines(msg) </span><span class="cov10" title="258">{
+                switch </span>{
+                case bytes.HasPrefix(line, headerID):<span class="cov8" title="78">
+                        val := trimHeader(len(headerID), line)
+                        if !bytes.ContainsRune(val, 0) </span><span class="cov8" title="77">{ // ignore if contains NULL
+                                e.ID = append([]byte(nil), val...)
+                                e.IDPresent = true
+                        }</span>
+                case bytes.HasPrefix(line, headerData):<span class="cov9" title="168">
+                        // The spec allows for multiple data fields per event, concatenated them with "\n".
+                        e.Data = append(e.Data[:], append(trimHeader(len(headerData), line), byte('\n'))...)</span>
+                // The spec says that a line that simply contains the string "data" should be treated as a data field with an empty body.
+                case bytes.Equal(line, bytes.TrimSuffix(headerData, []byte(":"))):<span class="cov0" title="0">
+                        e.Data = append(e.Data, byte('\n'))</span>
+                case bytes.HasPrefix(line, headerEvent):<span class="cov2" title="3">
+                        e.Event = append([]byte(nil), trimHeader(len(headerEvent), line)...)</span>
+                case bytes.HasPrefix(line, headerRetry):<span class="cov2" title="2">
+                        e.Retry = append([]byte(nil), trimHeader(len(headerRetry), line)...)</span>
+                default:<span class="cov4" title="7"></span>
+                        // Ignore any garbage that doesn't match what we're looking for.
+                }
+        }
+
+        // Trim the last "\n" per the spec.
+        <span class="cov8" title="121">e.Data = bytes.TrimSuffix(e.Data, []byte("\n"))
+
+        if c.EncodingBase64 </span><span class="cov0" title="0">{
+                buf := make([]byte, base64.StdEncoding.DecodedLen(len(e.Data)))
+
+                n, decodeErr := base64.StdEncoding.Decode(buf, e.Data)
+                if decodeErr != nil </span><span class="cov0" title="0">{
+                        err = fmt.Errorf("failed to decode event message: %s", decodeErr)
+                }</span>
+                <span class="cov0" title="0">e.Data = buf[:n]</span>
+        }
+        <span class="cov8" title="121">return &amp;e, err</span>
+}
+
+func (c *Client) cleanup(ch chan *Event) <span class="cov4" title="10">{
+        c.mu.Lock()
+        defer c.mu.Unlock()
+
+        if c.subscribed[ch] != nil </span><span class="cov4" title="10">{
+                close(c.subscribed[ch])
+                delete(c.subscribed, ch)
+        }</span>
+}
+
+func trimHeader(size int, data []byte) []byte <span class="cov9" title="254">{
+        if data == nil || len(data) &lt; size </span><span class="cov0" title="0">{
+                return data
+        }</span>
+
+        <span class="cov9" title="254">data = data[size:]
+        // Remove optional leading whitespace
+        if len(data) &gt; 0 &amp;&amp; data[0] == 32 </span><span class="cov9" title="250">{
+                data = data[1:]
+        }</span>
+        // Remove trailing new line
+        <span class="cov9" title="254">if len(data) &gt; 0 &amp;&amp; data[len(data)-1] == 10 </span><span class="cov0" title="0">{
+                data = data[:len(data)-1]
+        }</span>
+        <span class="cov9" title="254">return data</span>
+}
+</pre>
+		
+		<pre class="file" id="file1" style="display: none">/* This Source Code Form is subject to the terms of the Mozilla Public
+ * License, v. 2.0. If a copy of the MPL was not distributed with this
+ * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
+
+package sse
+
+import (
+        "bufio"
+        "bytes"
+        "context"
+        "io"
+        "time"
+)
+
+// Event holds all of the event source fields
+type Event struct {
+        timestamp time.Time
+        IDPresent bool   // true if an id: field was seen in this event
+        ID        []byte
+        Data      []byte
+        Event     []byte
+        Retry     []byte
+        Comment   []byte
+}
+
+func (e *Event) hasContent() bool <span class="cov9" title="1125">{
+        return len(e.ID) &gt; 0 || len(e.Data) &gt; 0 || len(e.Event) &gt; 0 || len(e.Retry) &gt; 0
+}</span>
+
+// EventStreamReader scans an io.Reader looking for EventStream messages.
+type EventStreamReader struct {
+        scanner *bufio.Scanner
+}
+
+// stripBOM removes a leading UTF-8 BOM (EF BB BF) if present.
+func stripBOM(r io.Reader) io.Reader <span class="cov6" title="60">{
+        buf := make([]byte, 3)
+        n, _ := io.ReadFull(r, buf)
+        if n == 3 &amp;&amp; buf[0] == 0xEF &amp;&amp; buf[1] == 0xBB &amp;&amp; buf[2] == 0xBF </span><span class="cov1" title="1">{
+                return r // BOM consumed
+        }</span>
+        <span class="cov6" title="59">return io.MultiReader(bytes.NewReader(buf[:n]), r)</span>
+}
+
+// NewEventStreamReader creates an instance of EventStreamReader.
+func NewEventStreamReader(eventStream io.Reader, maxBufferSize int) *EventStreamReader <span class="cov6" title="60">{
+        scanner := bufio.NewScanner(stripBOM(eventStream))
+        initBufferSize := minPosInt(4096, maxBufferSize)
+        scanner.Buffer(make([]byte, initBufferSize), maxBufferSize)
+
+        split := func(data []byte, atEOF bool) (int, []byte, error) </span><span class="cov7" title="234">{
+                if atEOF &amp;&amp; len(data) == 0 </span><span class="cov5" title="48">{
+                        return 0, nil, nil
+                }</span>
+
+                // We have a full event payload to parse.
+                <span class="cov7" title="186">if i, nlen := containsDoubleNewline(data); i &gt;= 0 </span><span class="cov7" title="115">{
+                        return i + nlen, data[0:i], nil
+                }</span>
+                // If we're at EOF, we have all of the data.
+                <span class="cov6" title="71">if atEOF </span><span class="cov1" title="1">{
+                        return len(data), data, nil
+                }</span>
+                // Request more data.
+                <span class="cov6" title="70">return 0, nil, nil</span>
+        }
+        // Set the split function for the scanning operation.
+        <span class="cov6" title="60">scanner.Split(split)
+
+        return &amp;EventStreamReader{
+                scanner: scanner,
+        }</span>
+}
+
+// Returns a tuple containing the index of a double newline, and the number of bytes
+// represented by that sequence. If no double newline is present, the first value
+// will be negative.
+//
+// Per WHATWG SSE §9.2.6, a line ending is \r, \n, or \r\n (treated as one).
+// A double newline (empty line = event dispatch) therefore covers all pairings:
+//
+//        \r\r        (2) — bare CR + bare CR
+//        \n\n        (2) — LF + LF
+//        \n\r        (2) — LF + bare CR      [sse-frd: previously missing]
+//        \r\n\n      (3) — CRLF + LF
+//        \n\r\n      (3) — LF + CRLF
+//        \r\n\r      (3) — CRLF + bare CR    [sse-frd: previously missing]
+//        \r\n\r\n    (4) — CRLF + CRLF
+func containsDoubleNewline(data []byte) (int, int) <span class="cov7" title="186">{
+        // Search for each potentially valid sequence of newline characters.
+        // Per WHATWG SSE §9.2.6, all pairings of the three line endings are valid
+        // event terminators. Longer patterns are searched first so that their
+        // positions can take precedence over shorter sub-pattern matches.
+        crcr := bytes.Index(data, []byte("\r\r"))
+        lflf := bytes.Index(data, []byte("\n\n"))
+        lfcr := bytes.Index(data, []byte("\n\r"))
+        crlflf := bytes.Index(data, []byte("\r\n\n"))
+        lfcrlf := bytes.Index(data, []byte("\n\r\n"))
+        crlfcr := bytes.Index(data, []byte("\r\n\r"))
+        crlfcrlf := bytes.Index(data, []byte("\r\n\r\n"))
+
+        // Find the earliest position of a double newline combination.
+        minPos := minPosInt(crcr, minPosInt(lflf, minPosInt(lfcr, minPosInt(crlflf, minPosInt(lfcrlf, minPosInt(crlfcr, crlfcrlf))))))
+        if minPos &lt; 0 </span><span class="cov6" title="71">{
+                return minPos, 2
+        }</span>
+
+        // Determine the length of the terminator sequence.
+        // When a longer pattern and a shorter sub-pattern share the same start
+        // position, the longer pattern wins (e.g. \r\n\r\n beats \r\n\r).
+        <span class="cov7" title="115">nlen := 2
+        switch minPos </span>{
+        case crlfcrlf:<span class="cov1" title="1">
+                nlen = 4</span>
+        case crlflf, lfcrlf, crlfcr:<span class="cov1" title="1">
+                nlen = 3</span>
+        }
+        <span class="cov7" title="115">return minPos, nlen</span>
+}
+
+// Returns the minimum non-negative value out of the two values. If both
+// are negative, a negative value is returned.
+func minPosInt(a, b int) int <span class="cov10" title="1176">{
+        if a &lt; 0 </span><span class="cov9" title="996">{
+                return b
+        }</span>
+        <span class="cov7" title="180">if b &lt; 0 </span><span class="cov7" title="114">{
+                return a
+        }</span>
+        <span class="cov6" title="66">if a &gt; b </span><span class="cov3" title="7">{
+                return b
+        }</span>
+        <span class="cov6" title="59">return a</span>
+}
+
+// ReadEvent scans the EventStream for events.
+func (e *EventStreamReader) ReadEvent() ([]byte, error) <span class="cov7" title="166">{
+        if e.scanner.Scan() </span><span class="cov7" title="116">{
+                event := e.scanner.Bytes()
+                return event, nil
+        }</span>
+        <span class="cov5" title="50">if err := e.scanner.Err(); err != nil </span><span class="cov5" title="27">{
+                if err == context.Canceled </span><span class="cov4" title="13">{
+                        return nil, io.EOF
+                }</span>
+                <span class="cov4" title="14">return nil, err</span>
+        }
+        <span class="cov4" title="23">return nil, io.EOF</span>
+}
+</pre>
+		
+		<pre class="file" id="file2" style="display: none">/* This Source Code Form is subject to the terms of the Mozilla Public
+ * License, v. 2.0. If a copy of the MPL was not distributed with this
+ * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
+
+package sse
+
+import (
+        "strconv"
+        "time"
+)
+
+// EventLog holds all of previous events
+type EventLog struct {
+        // MaxEntries limits the number of events retained. When a new event
+        // would exceed this cap the oldest entry is evicted. Zero means unlimited.
+        MaxEntries int
+        entries    []*Event
+}
+
+// Add event to eventlog
+func (e *EventLog) Add(ev *Event) <span class="cov10" title="1125">{
+        if !ev.hasContent() </span><span class="cov1" title="1">{
+                return
+        }</span>
+
+        <span class="cov9" title="1124">ev.ID = []byte(e.currentindex())
+        ev.timestamp = time.Now()
+        e.entries = append(e.entries, ev)
+
+        if e.MaxEntries &gt; 0 &amp;&amp; len(e.entries) &gt; e.MaxEntries </span><span class="cov3" title="5">{
+                e.entries = e.entries[len(e.entries)-e.MaxEntries:]
+        }</span>
+}
+
+// Clear events from eventlog
+func (e *EventLog) Clear() <span class="cov1" title="1">{
+        e.entries = nil
+}</span>
+
+// Replay events to a subscriber
+func (e *EventLog) Replay(s *Subscriber) <span class="cov5" title="39">{
+        for i := 0; i &lt; len(e.entries); i++ </span><span class="cov7" title="128">{
+                id, _ := strconv.Atoi(string(e.entries[i].ID))
+                if id &gt;= s.eventid </span><span class="cov7" title="122">{
+                        s.connection &lt;- e.entries[i]
+                }</span>
+        }
+}
+
+// Len returns the number of events in the log.
+func (e *EventLog) Len() int <span class="cov2" title="3">{
+        return len(e.entries)
+}</span>
+
+func (e *EventLog) currentindex() string <span class="cov9" title="1124">{
+        return strconv.Itoa(len(e.entries))
+}</span>
+</pre>
+		
+		<pre class="file" id="file3" style="display: none">/* This Source Code Form is subject to the terms of the Mozilla Public
+ * License, v. 2.0. If a copy of the MPL was not distributed with this
+ * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
+
+package sse
+
+import (
+        "bytes"
+        "fmt"
+        "net/http"
+        "strconv"
+        "time"
+)
+
+// errWriter wraps an http.ResponseWriter and tracks the first write error.
+// After any write fails, subsequent writes are no-ops.
+type errWriter struct {
+        w   http.ResponseWriter
+        err error
+}
+
+func (ew *errWriter) printf(format string, args ...any) <span class="cov10" title="426">{
+        if ew.err != nil </span><span class="cov4" title="9">{
+                return
+        }</span>
+        <span class="cov9" title="417">_, ew.err = fmt.Fprintf(ew.w, format, args...)</span>
+}
+
+func (ew *errWriter) print(s string) <span class="cov8" title="120">{
+        if ew.err != nil </span><span class="cov2" title="2">{
+                return
+        }</span>
+        <span class="cov8" title="118">_, ew.err = fmt.Fprint(ew.w, s)</span>
+}
+
+// ServeHTTP serves new connections with events for a given stream ...
+func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) <span class="cov6" title="53">{
+        flusher, ok := w.(http.Flusher)
+        if !ok </span><span class="cov1" title="1">{
+                http.Error(w, "Streaming unsupported!", http.StatusInternalServerError)
+                return
+        }</span>
+        <span class="cov6" title="52">s.ServeHTTPWithFlusher(w, r, flusher)</span>
+}
+
+// ServeHTTPWithFlusher serves SSE to frameworks that implement flushing
+// separately from http.ResponseWriter (e.g. Fiber, fasthttp adapters).
+// The flusher parameter must not be nil.
+func (s *Server) ServeHTTPWithFlusher(w http.ResponseWriter, r *http.Request, flusher http.Flusher) <span class="cov6" title="53">{
+        w.Header().Set("Content-Type", "text/event-stream")
+        w.Header().Set("Cache-Control", "no-cache")
+        w.Header().Set("Connection", "keep-alive")
+
+        for k, v := range s.Headers </span><span class="cov0" title="0">{
+                w.Header().Set(k, v)
+        }</span>
+
+        // Get the StreamID from the URL
+        <span class="cov6" title="53">streamID := r.URL.Query().Get("stream")
+        if streamID == "" </span><span class="cov0" title="0">{
+                http.Error(w, "Please specify a stream!", http.StatusInternalServerError)
+                return
+        }</span>
+
+        <span class="cov6" title="53">stream := s.getStream(streamID)
+
+        if stream == nil </span><span class="cov5" title="19">{
+                if !s.AutoStream </span><span class="cov5" title="18">{
+                        http.Error(w, "Stream not found!", http.StatusNotFound)
+                        return
+                }</span>
+
+                <span class="cov1" title="1">stream = s.CreateStream(streamID)</span>
+        }
+
+        <span class="cov6" title="35">eventid := 0
+        if id := r.Header.Get("Last-Event-ID"); id != "" </span><span class="cov2" title="3">{
+                // Per WHATWG SSE spec (§9.2.4), Last-Event-ID is an opaque string.
+                // If it parses as a number, use it for event log replay;
+                // otherwise accept it without error (replay from the beginning).
+                eventid, _ = strconv.Atoi(id)
+        }</span>
+
+        // Create the stream subscriber; reject if the stream is at capacity.
+        <span class="cov6" title="35">sub, ok := stream.addSubscriber(eventid, r.URL)
+        if !ok </span><span class="cov1" title="1">{
+                http.Error(w, "Too many subscribers!", http.StatusTooManyRequests)
+                return
+        }</span>
+
+        <span class="cov6" title="34">go func() </span><span class="cov6" title="34">{
+                &lt;-r.Context().Done()
+
+                sub.close()
+
+                if s.AutoStream &amp;&amp; !s.AutoReplay &amp;&amp; stream.getSubscriberCount() == 0 </span><span class="cov1" title="1">{
+                        s.RemoveStream(streamID)
+                }</span>
+        }()
+
+        <span class="cov6" title="34">w.WriteHeader(http.StatusOK)
+        flusher.Flush()
+
+        // If set, call OnSubscribeHTTP so the caller can write an initial event
+        // (e.g. a "connected" message) before the main event loop begins.
+        if s.OnSubscribeHTTP != nil </span><span class="cov1" title="1">{
+                s.OnSubscribeHTTP(streamID, w)
+        }</span>
+
+        // Push events to client
+        <span class="cov6" title="34">ew := &amp;errWriter{w: w}
+
+        for ev := range sub.connection </span><span class="cov8" title="120">{
+                // If the data buffer is an empty string, skip this event.
+                if len(ev.Data) == 0 &amp;&amp; len(ev.Comment) == 0 </span><span class="cov1" title="1">{
+                        continue</span>
+                }
+
+                // if the event has expired, dont send it
+                <span class="cov8" title="119">if s.EventTTL != 0 &amp;&amp; time.Now().After(ev.timestamp.Add(s.EventTTL)) </span><span class="cov2" title="2">{
+                        continue</span>
+                }
+
+                <span class="cov8" title="117">if len(ev.Data) &gt; 0 </span><span class="cov8" title="116">{
+                        // id: field serialization rules (WHATWG SSE §9.2.5):
+                        //   - len(ev.ID) &gt; 0          → emit "id: &lt;value&gt;\n" (normal case;
+                        //                               includes backward-compat callers that
+                        //                               set ID without setting IDPresent).
+                        //   - IDPresent &amp;&amp; len == 0   → emit bare "id:\n" to reset the
+                        //                               client's last-event-ID to empty.
+                        //   - !IDPresent &amp;&amp; len == 0  → omit the id: field entirely.
+                        if len(ev.ID) &gt; 0 </span><span class="cov7" title="109">{
+                                ew.printf("id: %s\n", ev.ID)
+                        }</span> else<span class="cov3" title="7"> if ev.IDPresent </span><span class="cov2" title="2">{
+                                ew.print("id:\n")
+                        }</span>
+
+                        <span class="cov8" title="116">if s.SplitData </span><span class="cov5" title="28">{
+                                sd := bytes.Split(ev.Data, []byte("\n"))
+                                for i := range sd </span><span class="cov9" title="224">{
+                                        ew.printf("data: %s\n", sd[i])
+                                }</span>
+                        } else<span class="cov7" title="88"> {
+                                if bytes.HasPrefix(ev.Data, []byte(":")) </span><span class="cov0" title="0">{
+                                        ew.printf("%s\n", ev.Data)
+                                }</span> else<span class="cov7" title="88"> {
+                                        ew.printf("data: %s\n", ev.Data)
+                                }</span>
+                        }
+
+                        <span class="cov8" title="116">if len(ev.Event) &gt; 0 </span><span class="cov0" title="0">{
+                                ew.printf("event: %s\n", ev.Event)
+                        }</span>
+
+                        <span class="cov8" title="116">if len(ev.Retry) &gt; 0 </span><span class="cov1" title="1">{
+                                ew.printf("retry: %s\n", ev.Retry)
+                        }</span>
+                }
+
+                <span class="cov8" title="117">if len(ev.Comment) &gt; 0 </span><span class="cov1" title="1">{
+                        ew.printf(": %s\n", ev.Comment)
+                }</span>
+
+                <span class="cov8" title="117">ew.print("\n")
+
+                flusher.Flush()
+
+                if ew.err != nil </span><span class="cov1" title="1">{
+                        break</span>
+                }
+        }
+}
+</pre>
+		
+		<pre class="file" id="file4" style="display: none">/* This Source Code Form is subject to the terms of the Mozilla Public
+ * License, v. 2.0. If a copy of the MPL was not distributed with this
+ * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
+
+package sse
+
+import (
+        "encoding/base64"
+        "net/http"
+        "sync"
+        "time"
+)
+
+// DefaultBufferSize size of the queue that holds the streams messages.
+const DefaultBufferSize = 1024
+
+// Server Is our main struct
+type Server struct {
+        // Extra headers adding to the HTTP response to each client
+        Headers map[string]string
+        // Sets a ttl that prevents old events from being transmitted
+        EventTTL time.Duration
+        // Specifies the size of the message buffer for each stream
+        BufferSize int
+        // Encodes all data as base64
+        EncodeBase64 bool
+        // Splits an events data into multiple data: entries
+        SplitData bool
+        // Enables creation of a stream when a client connects
+        AutoStream bool
+        // Enables automatic replay for each new subscriber that connects
+        AutoReplay bool
+
+        // Specifies the function to run when client subscribe or un-subscribe
+        OnSubscribe   func(streamID string, sub *Subscriber)
+        OnUnsubscribe func(streamID string, sub *Subscriber)
+
+        // OnSubscribeHTTP is called with the ResponseWriter when a new subscriber
+        // connects, before the main event loop begins. Implementors can write
+        // initial events (e.g. a "connected" message) directly to w. Both
+        // OnSubscribe and OnSubscribeHTTP fire when set.
+        OnSubscribeHTTP func(streamID string, w http.ResponseWriter)
+
+        streams   map[string]*Stream
+        muStreams sync.RWMutex
+}
+
+// New will create a server and setup defaults
+func New() *Server <span class="cov2" title="42">{
+        return &amp;Server{
+                BufferSize: DefaultBufferSize,
+                AutoStream: false,
+                AutoReplay: true,
+                streams:    make(map[string]*Stream),
+                Headers:    map[string]string{},
+        }
+}</span>
+
+// NewWithCallback will create a server and setup defaults with callback function
+func NewWithCallback(onSubscribe, onUnsubscribe func(streamID string, sub *Subscriber)) *Server <span class="cov1" title="1">{
+        return &amp;Server{
+                BufferSize:    DefaultBufferSize,
+                AutoStream:    false,
+                AutoReplay:    true,
+                streams:       make(map[string]*Stream),
+                Headers:       map[string]string{},
+                OnSubscribe:   onSubscribe,
+                OnUnsubscribe: onUnsubscribe,
+        }
+}</span>
+
+// Close shuts down the server, closes all of the streams and connections
+func (s *Server) Close() <span class="cov2" title="43">{
+        s.muStreams.Lock()
+        defer s.muStreams.Unlock()
+
+        for id := range s.streams </span><span class="cov2" title="37">{
+                s.streams[id].close()
+                delete(s.streams, id)
+        }</span>
+}
+
+// CreateStream will create a new stream and register it
+func (s *Server) CreateStream(id string) *Stream <span class="cov2" title="40">{
+        s.muStreams.Lock()
+        defer s.muStreams.Unlock()
+
+        if s.streams[id] != nil </span><span class="cov1" title="1">{
+                return s.streams[id]
+        }</span>
+
+        <span class="cov2" title="39">str := newStream(id, s.BufferSize, s.AutoReplay, s.AutoStream, s.OnSubscribe, s.OnUnsubscribe)
+        str.run()
+
+        s.streams[id] = str
+
+        return str</span>
+}
+
+// RemoveStream will remove a stream
+func (s *Server) RemoveStream(id string) <span class="cov1" title="5">{
+        s.muStreams.Lock()
+        defer s.muStreams.Unlock()
+
+        if s.streams[id] != nil </span><span class="cov1" title="2">{
+                s.streams[id].close()
+                delete(s.streams, id)
+        }</span>
+}
+
+// StreamExists checks whether a stream by a given id exists
+func (s *Server) StreamExists(id string) bool <span class="cov0" title="0">{
+        return s.getStream(id) != nil
+}</span>
+
+// Publish sends a mesage to every client in a streamID.
+// If the stream's buffer is full, it blocks until the message is sent out to
+// all subscribers (but not necessarily arrived the clients), or when the
+// stream is closed.
+func (s *Server) Publish(id string, event *Event) <span class="cov9" title="100001648">{
+        stream := s.getStream(id)
+        if stream == nil </span><span class="cov9" title="99999504">{
+                return
+        }</span>
+
+        <span class="cov4" title="2144">select </span>{
+        case &lt;-stream.quit:<span class="cov1" title="1"></span>
+        case stream.event &lt;- s.process(event):<span class="cov4" title="2143"></span>
+        }
+}
+
+// TryPublish is the same as Publish except that when the operation would cause
+// the call to be blocked, it simply drops the message and returns false.
+// Together with a small BufferSize, it can be useful when publishing the
+// latest message ASAP is more important than reliable delivery.
+func (s *Server) TryPublish(id string, event *Event) bool <span class="cov0" title="0">{
+        stream := s.getStream(id)
+        if stream == nil </span><span class="cov0" title="0">{
+                return false
+        }</span>
+
+        <span class="cov0" title="0">select </span>{
+        case stream.event &lt;- s.process(event):<span class="cov0" title="0">
+                return true</span>
+        default:<span class="cov0" title="0">
+                return false</span>
+        }
+}
+
+func (s *Server) getStream(id string) *Stream <span class="cov10" title="100001707">{
+        s.muStreams.RLock()
+        defer s.muStreams.RUnlock()
+        return s.streams[id]
+}</span>
+
+// GetStream returns the stream with the given id, or nil if it does not exist.
+// It is safe to call concurrently.
+func (s *Server) GetStream(id string) *Stream <span class="cov1" title="1">{
+        return s.getStream(id)
+}</span>
+
+func (s *Server) process(event *Event) *Event <span class="cov4" title="2144">{
+        if s.EncodeBase64 </span><span class="cov0" title="0">{
+                output := make([]byte, base64.StdEncoding.EncodedLen(len(event.Data)))
+                base64.StdEncoding.Encode(output, event.Data)
+                event.Data = output
+        }</span>
+        <span class="cov4" title="2144">return event</span>
+}
+</pre>
+		
+		<pre class="file" id="file5" style="display: none">/* This Source Code Form is subject to the terms of the Mozilla Public
+ * License, v. 2.0. If a copy of the MPL was not distributed with this
+ * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
+
+package sse
+
+import (
+        "net/url"
+        "sync"
+        "sync/atomic"
+)
+
+// Stream ...
+type Stream struct {
+        ID              string
+        event           chan *Event
+        quit            chan struct{}
+        quitOnce        sync.Once
+        register        chan *Subscriber
+        deregister      chan *Subscriber
+        subscribers     []*Subscriber
+        Eventlog        EventLog
+        subscriberCount int32
+        // Enables replaying of eventlog to newly added subscribers
+        AutoReplay   bool
+        isAutoStream bool
+
+        // MaxSubscribers caps the number of concurrent subscribers for this
+        // stream. When MaxSubscribers &gt; 0 and the current subscriber count is
+        // at or above the cap, addSubscriber returns (nil, false) and the
+        // caller should respond with HTTP 429 Too Many Requests.
+        // A value of 0 (the default) means unlimited.
+        MaxSubscribers int
+
+        // Specifies the function to run when client subscribe or un-subscribe.
+        // These are set from the server-level callbacks via newStream.
+        OnSubscribe   func(streamID string, sub *Subscriber)
+        OnUnsubscribe func(streamID string, sub *Subscriber)
+
+        // mu protects the per-stream callback fields below.
+        mu sync.RWMutex
+
+        // Per-stream callbacks that fire in addition to the server-level ones.
+        // Use SetOnSubscribe / SetOnUnsubscribe to set these safely.
+        streamOnSubscribe   func(streamID string, sub *Subscriber)
+        streamOnUnsubscribe func(streamID string, sub *Subscriber)
+}
+
+// SetOnSubscribe sets a per-stream subscribe callback that fires in addition
+// to the server-level OnSubscribe callback. It is safe to call concurrently.
+func (str *Stream) SetOnSubscribe(fn func(streamID string, sub *Subscriber)) <span class="cov1" title="1">{
+        str.mu.Lock()
+        str.streamOnSubscribe = fn
+        str.mu.Unlock()
+}</span>
+
+// SetOnUnsubscribe sets a per-stream unsubscribe callback that fires in
+// addition to the server-level OnUnsubscribe callback. It is safe to call
+// concurrently.
+func (str *Stream) SetOnUnsubscribe(fn func(streamID string, sub *Subscriber)) <span class="cov1" title="1">{
+        str.mu.Lock()
+        str.streamOnUnsubscribe = fn
+        str.mu.Unlock()
+}</span>
+
+// newStream returns a new stream
+func newStream(id string, buffSize int, replay, isAutoStream bool, onSubscribe, onUnsubscribe func(string, *Subscriber)) *Stream <span class="cov5" title="46">{
+        return &amp;Stream{
+                ID:            id,
+                AutoReplay:    replay,
+                subscribers:   make([]*Subscriber, 0),
+                isAutoStream:  isAutoStream,
+                register:      make(chan *Subscriber),
+                deregister:    make(chan *Subscriber),
+                event:         make(chan *Event, buffSize),
+                quit:          make(chan struct{}),
+                Eventlog:      EventLog{},
+                OnSubscribe:   onSubscribe,
+                OnUnsubscribe: onUnsubscribe,
+        }
+}</span>
+
+func (str *Stream) run() <span class="cov5" title="46">{
+        go func(str *Stream) </span><span class="cov5" title="46">{
+                for </span><span class="cov10" title="1256">{
+                        select </span>{
+                        // Add new subscriber
+                        case subscriber := &lt;-str.register:<span class="cov6" title="57">
+                                str.subscribers = append(str.subscribers, subscriber)
+                                if str.AutoReplay </span><span class="cov5" title="39">{
+                                        str.Eventlog.Replay(subscriber)
+                                }</span>
+
+                        // Remove closed subscriber
+                        case subscriber := &lt;-str.deregister:<span class="cov5" title="30">
+                                i := str.getSubIndex(subscriber)
+                                if i != -1 </span><span class="cov5" title="30">{
+                                        str.removeSubscriber(i)
+                                }</span>
+
+                                <span class="cov5" title="30">if str.OnUnsubscribe != nil </span><span class="cov0" title="0">{
+                                        go str.OnUnsubscribe(str.ID, subscriber)
+                                }</span>
+
+                                <span class="cov5" title="30">str.mu.RLock()
+                                perStreamUnsub := str.streamOnUnsubscribe
+                                str.mu.RUnlock()
+                                if perStreamUnsub != nil </span><span class="cov1" title="1">{
+                                        go perStreamUnsub(str.ID, subscriber)
+                                }</span>
+
+                        // Publish event to subscribers
+                        case event := &lt;-str.event:<span class="cov9" title="1124">
+                                if str.AutoReplay </span><span class="cov9" title="1112">{
+                                        str.Eventlog.Add(event)
+                                }</span>
+                                <span class="cov9" title="1124">for i := range str.subscribers </span><span class="cov6" title="81">{
+                                        select </span>{
+                                        case str.subscribers[i].connection &lt;- event:<span class="cov6" title="80"></span>
+                                        default:<span class="cov1" title="1"></span>
+                                                // Drop event for slow subscriber to avoid blocking the stream
+                                        }
+                                }
+
+                        // Shutdown if the server closes
+                        case &lt;-str.quit:<span class="cov5" title="45">
+                                // remove connections
+                                str.removeAllSubscribers()
+                                return</span>
+                        }
+                }
+        }(str)
+}
+
+func (str *Stream) close() <span class="cov5" title="46">{
+        str.quitOnce.Do(func() </span><span class="cov5" title="46">{
+                close(str.quit)
+        }</span>)
+}
+
+func (str *Stream) getSubIndex(sub *Subscriber) int <span class="cov5" title="30">{
+        for i := range str.subscribers </span><span class="cov5" title="30">{
+                if str.subscribers[i] == sub </span><span class="cov5" title="30">{
+                        return i
+                }</span>
+        }
+        <span class="cov0" title="0">return -1</span>
+}
+
+// addSubscriber will create a new subscriber on a stream.
+// It returns (subscriber, true) on success, or (nil, false) when the stream's
+// MaxSubscribers cap is exceeded (caller should respond with 429).
+func (str *Stream) addSubscriber(eventid int, url *url.URL) (*Subscriber, bool) <span class="cov6" title="59">{
+        // Enforce MaxSubscribers cap before allocating anything.
+        if str.MaxSubscribers &gt; 0 &amp;&amp; int(atomic.LoadInt32(&amp;str.subscriberCount)) &gt;= str.MaxSubscribers </span><span class="cov1" title="2">{
+                return nil, false
+        }</span>
+
+        <span class="cov6" title="57">atomic.AddInt32(&amp;str.subscriberCount, 1)
+        sub := &amp;Subscriber{
+                eventid:    eventid,
+                quit:       str.deregister,
+                streamQuit: str.quit,
+                connection: make(chan *Event, 64),
+                URL:        url,
+        }
+
+        if str.isAutoStream </span><span class="cov1" title="1">{
+                sub.removed = make(chan struct{}, 1)
+        }</span>
+
+        <span class="cov6" title="57">str.register &lt;- sub
+
+        if str.OnSubscribe != nil </span><span class="cov1" title="1">{
+                go str.OnSubscribe(str.ID, sub)
+        }</span>
+
+        <span class="cov6" title="57">str.mu.RLock()
+        perStreamSub := str.streamOnSubscribe
+        str.mu.RUnlock()
+        if perStreamSub != nil </span><span class="cov1" title="1">{
+                go perStreamSub(str.ID, sub)
+        }</span>
+
+        <span class="cov6" title="57">return sub, true</span>
+}
+
+func (str *Stream) removeSubscriber(i int) <span class="cov5" title="30">{
+        atomic.AddInt32(&amp;str.subscriberCount, -1)
+        close(str.subscribers[i].connection)
+        if str.subscribers[i].removed != nil </span><span class="cov1" title="1">{
+                str.subscribers[i].removed &lt;- struct{}{}
+                close(str.subscribers[i].removed)
+        }</span>
+        <span class="cov5" title="30">str.subscribers = append(str.subscribers[:i], str.subscribers[i+1:]...)</span>
+}
+
+func (str *Stream) removeAllSubscribers() <span class="cov5" title="45">{
+        for i := 0; i &lt; len(str.subscribers); i++ </span><span class="cov5" title="26">{
+                close(str.subscribers[i].connection)
+                if str.subscribers[i].removed != nil </span><span class="cov0" title="0">{
+                        str.subscribers[i].removed &lt;- struct{}{}
+                        close(str.subscribers[i].removed)
+                }</span>
+        }
+        <span class="cov5" title="45">atomic.StoreInt32(&amp;str.subscriberCount, 0)
+        str.subscribers = str.subscribers[:0]</span>
+}
+
+func (str *Stream) getSubscriberCount() int <span class="cov4" title="22">{
+        return int(atomic.LoadInt32(&amp;str.subscriberCount))
+}</span>
+
+// SubscriberCount returns the current number of active subscribers on this stream.
+// It is safe to call concurrently.
+func (str *Stream) SubscriberCount() int <span class="cov4" title="16">{
+        return str.getSubscriberCount()
+}</span>
+</pre>
+		
+		<pre class="file" id="file6" style="display: none">/* This Source Code Form is subject to the terms of the Mozilla Public
+ * License, v. 2.0. If a copy of the MPL was not distributed with this
+ * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
+
+package sse
+
+import "net/url"
+
+// Subscriber ...
+type Subscriber struct {
+        quit       chan *Subscriber
+        connection chan *Event
+        removed    chan struct{}
+        // streamQuit is the stream's quit channel. close() selects on it so that
+        // the context-done goroutine in ServeHTTP is never permanently blocked
+        // when the stream's run() goroutine has already exited (NF-008 / sse-8er).
+        streamQuit &lt;-chan struct{}
+        eventid    int
+        URL        *url.URL
+}
+
+// close will let the stream know that the clients connection has terminated.
+// If the stream has already shut down (streamQuit is closed) it returns
+// immediately without blocking, preventing a goroutine leak.
+func (s *Subscriber) close() <span class="cov10" title="36">{
+        select </span>{
+        case s.quit &lt;- s:<span class="cov9" title="29"></span>
+        case &lt;-s.streamQuit:<span class="cov5" title="7">
+                // Stream already shut down; nothing left to deregister.
+                return</span>
+        }
+        <span class="cov9" title="29">if s.removed != nil </span><span class="cov1" title="1">{
+                &lt;-s.removed
+        }</span>
+}
+</pre>
+		
+		</div>
+	</body>
+	<script>
+	(function() {
+		var files = document.getElementById('files');
+		var visible;
+		files.addEventListener('change', onChange, false);
+		function select(part) {
+			if (visible)
+				visible.style.display = 'none';
+			visible = document.getElementById(part);
+			if (!visible)
+				return;
+			files.value = part;
+			visible.style.display = 'block';
+			location.hash = part;
+		}
+		function onChange() {
+			select(files.value);
+			window.scrollTo(0, 0);
+		}
+		if (location.hash != "") {
+			select(location.hash.substr(1));
+		}
+		if (!visible) {
+			select("file0");
+		}
+	})();
+	</script>
+</html>

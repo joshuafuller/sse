@@ -38,11 +38,17 @@ func (e *EventLog) Clear() {
 }
 
 // Replay events to a subscriber.
+// The send is non-blocking: if the subscriber's channel is full the event is
+// skipped rather than stalling the stream's run() goroutine (sse-xua).
 func (e *EventLog) Replay(s *Subscriber) {
 	for i := 0; i < len(e.entries); i++ {
 		id, _ := strconv.Atoi(string(e.entries[i].ID))
 		if id >= s.eventid {
-			s.connection <- e.entries[i]
+			select {
+			case s.connection <- e.entries[i]:
+			default:
+				// Subscriber channel full — skip rather than block.
+			}
 		}
 	}
 }
