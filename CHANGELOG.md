@@ -12,6 +12,10 @@ repository and are documented in its
 
 ## [Unreleased]
 
+---
+
+## [v3.0.5] — 2026-02-27
+
 ### Fixed
 
 - **Client — `Connected()` stuck `true` after context cancellation**: `connected.Store(false)`
@@ -25,10 +29,9 @@ repository and are documented in its
   `readLoop`'s legacy path already set it).
 
 - **Server — `Cache-Control` response header corrected to `no-cache`**: The server was
-  sending `Cache-Control: no-cache` in the request (client side, correct) but
-  `Cache-Control: no-store` in the response (server side, incorrect). The WHATWG SSE
-  spec §9.2.1 recommends `no-cache` for server responses so intermediaries know not to
-  buffer the stream. Changed `http.go` to emit `no-cache`.
+  sending `Cache-Control: no-store` in responses (incorrect). The WHATWG SSE spec §9.2.1
+  recommends `no-cache` so intermediaries know not to buffer the stream. Client request
+  header was already `no-cache` (correct). Changed `http.go` server response to match.
 
 ### Added
 
@@ -38,6 +41,11 @@ repository and are documented in its
   max subscribers, TryPublish, OnConnect/OnDisconnect callbacks, multi-stream isolation,
   base64 encoding, split-data, per-stream callbacks, reconnect-on-EOF, event log max
   entries, and more. All 26 tests pass with `-race`.
+
+### Documentation
+
+- Migration guide extracted to `docs/migrating-from-v2.md`; README now shows counts
+  and a link rather than inlining all before/after examples.
 
 ---
 
@@ -447,7 +455,8 @@ out of scope, documentation-only, or already addressed by existing behaviour:
 
 ---
 
-[Unreleased]: https://github.com/joshuafuller/sse/compare/v3.0.4...HEAD
+[Unreleased]: https://github.com/joshuafuller/sse/compare/v3.0.5...HEAD
+[v3.0.5]: https://github.com/joshuafuller/sse/compare/v3.0.4...v3.0.5
 [v3.0.4]: https://github.com/joshuafuller/sse/compare/v3.0.3...v3.0.4
 [v3.0.3]: https://github.com/joshuafuller/sse/compare/v3.0.2...v3.0.3
 [v3.0.2]: https://github.com/joshuafuller/sse/compare/v3.0.1...v3.0.2
