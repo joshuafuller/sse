@@ -560,7 +560,7 @@ func (c *Client) cleanup(ch chan *Event) {
 }
 
 func trimHeader(size int, data []byte) []byte {
-	if data == nil || len(data) < size {
+	if len(data) < size {
 		return data
 	}
 
