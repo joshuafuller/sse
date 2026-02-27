@@ -61,14 +61,12 @@ type Client struct {
 	Retry time.Time
 
 	// ReconnectStrategy controls how the client retries failed or dropped
-	// connections. If nil, a default backoff.NewExponentialBackOff() is used,
-	// which retries with exponential delay but stops permanently after 15
-	// minutes (MaxElapsedTime = 15 * time.Minute).
-	//
-	// To retry indefinitely, set an explicit strategy with MaxElapsedTime = 0:
+	// connections. If nil, the client uses backoff.NewExponentialBackOff()
+	// with MaxElapsedTime = 0, which means it retries indefinitely until the
+	// context is cancelled. Set an explicit strategy to cap retry duration:
 	//
 	//	b := backoff.NewExponentialBackOff()
-	//	b.MaxElapsedTime = 0 // 0 means no time limit
+	//	b.MaxElapsedTime = 5 * time.Minute // stop after 5 minutes
 	//	client.ReconnectStrategy = b
 	ReconnectStrategy backoff.BackOff
 
@@ -122,22 +120,22 @@ func (c *Client) Connected() bool {
 }
 
 // Subscribe connects to a named SSE stream and calls handler for each event.
-// It blocks until the server stops retrying (see ReconnectStrategy).
-// By default, reconnection uses backoff.NewExponentialBackOff() which stops
-// after 15 minutes; set ReconnectStrategy with MaxElapsedTime = 0 to retry
-// indefinitely.
+// It blocks until the context is cancelled or the server sends HTTP 204.
+// By default, reconnection retries indefinitely (MaxElapsedTime = 0); set
+// ReconnectStrategy with an explicit MaxElapsedTime to limit retry duration.
 func (c *Client) Subscribe(stream string, handler func(msg *Event)) error {
 	return c.SubscribeWithContext(context.Background(), stream, handler)
 }
 
 // SubscribeWithContext connects to a named SSE stream and calls handler for
-// each received event. It blocks until ctx is cancelled, the server sends HTTP
-// 204, or the reconnect strategy gives up.
+// each received event. It blocks until ctx is cancelled or the server sends
+// HTTP 204.
 //
 // Reconnect behaviour: on any connection error or EOF the client waits
 // according to ReconnectStrategy before reconnecting. If ReconnectStrategy is
-// nil a default backoff.NewExponentialBackOff() is used, which stops after 15
-// minutes. Cancelling ctx always terminates the subscription immediately.
+// nil a default exponential backoff is used with MaxElapsedTime = 0, meaning
+// it retries indefinitely until ctx is cancelled. Set ReconnectStrategy with
+// an explicit MaxElapsedTime to cap the retry window.
 func (c *Client) SubscribeWithContext(ctx context.Context, stream string, handler func(msg *Event)) error {
 	// Apply user specified reconnection strategy or default to standard NewExponentialBackOff() reconnection method.
 	// Wrap with context so cancellation stops the retry loop.
@@ -146,6 +144,7 @@ func (c *Client) SubscribeWithContext(ctx context.Context, stream string, handle
 		b = backoff.WithContext(c.ReconnectStrategy, ctx)
 	} else {
 		eb := backoff.NewExponentialBackOff()
+		eb.MaxElapsedTime = 0 // 0 means retry indefinitely; user can set ReconnectStrategy to cap
 		c.mu.Lock()
 		if c.retryDelay > 0 {
 			eb.InitialInterval = c.retryDelay
@@ -215,7 +214,11 @@ func (c *Client) SubscribeChan(stream string, ch chan *Event) error {
 	return c.SubscribeChanWithContext(context.Background(), stream, ch)
 }
 
-// SubscribeChanWithContext sends all events to the provided channel with context.
+// SubscribeChanWithContext sends all events to the provided channel with
+// context. It blocks until the first successful connection (or a permanent
+// error) and then hands off to a background goroutine that retries
+// indefinitely by default (MaxElapsedTime = 0). Set ReconnectStrategy with an
+// explicit MaxElapsedTime to cap the retry window.
 func (c *Client) SubscribeChanWithContext(ctx context.Context, stream string, ch chan *Event) error {
 	var connected bool
 	errch := make(chan error)
@@ -245,6 +248,7 @@ func (c *Client) SubscribeChanWithContext(ctx context.Context, stream string, ch
 			b = backoff.WithContext(c.ReconnectStrategy, ctx)
 		} else {
 			eb := backoff.NewExponentialBackOff()
+			eb.MaxElapsedTime = 0 // 0 means retry indefinitely; user can set ReconnectStrategy to cap
 			c.mu.Lock()
 			if c.retryDelay > 0 {
 				eb.InitialInterval = c.retryDelay

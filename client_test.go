@@ -1807,3 +1807,81 @@ func TestSubscribeChanWithContextRetryDelay(t *testing.T) {
 	}
 }
 
+// TestCustomBackoffMaxElapsedTimeStopsRetrying verifies that a ReconnectStrategy
+// with a short MaxElapsedTime causes SubscribeWithContext to stop retrying and
+// return a non-context error. This proves the backoff mechanism works and gives
+// a baseline to contrast with the default (infinite) behaviour.
+func TestCustomBackoffMaxElapsedTimeStopsRetrying(t *testing.T) {
+	t.Parallel()
+
+	// Server always returns 503 so the client keeps trying until MaxElapsedTime.
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusServiceUnavailable)
+	}))
+	defer srv.Close()
+
+	eb := backoff.NewExponentialBackOff()
+	eb.InitialInterval = 10 * time.Millisecond
+	eb.MaxElapsedTime = 200 * time.Millisecond
+
+	c := sse.NewClient(srv.URL)
+	c.ReconnectStrategy = eb
+
+	ctx := context.Background()
+	err := c.SubscribeWithContext(ctx, "test", func(msg *sse.Event) {})
+
+	// Must return an error (503 wrapped in StreamError), NOT context.Canceled.
+	require.Error(t, err, "client must stop retrying after MaxElapsedTime")
+	assert.False(t, errors.Is(err, context.Canceled),
+		"error should be a StreamError (503), not context.Canceled; got: %v", err)
+	var streamErr *sse.StreamError
+	assert.True(t, errors.As(err, &streamErr),
+		"expected a *sse.StreamError wrapping the 503; got: %v", err)
+}
+
+// TestDefaultBackoffRetriesUntilContextCancel verifies that the DEFAULT
+// reconnect strategy (no ReconnectStrategy set) retries indefinitely — the
+// subscription only stops when the context is cancelled, not because an
+// internal MaxElapsedTime timer fires.
+//
+// This documents the intended behaviour after the sse-bky fix
+// (eb.MaxElapsedTime = 0). Before the fix the default backoff stopped after
+// 15 minutes; with the fix it retries until the caller cancels the context.
+func TestDefaultBackoffRetriesUntilContextCancel(t *testing.T) {
+	t.Parallel()
+
+	// Server always returns 503 so the client keeps retrying.
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusServiceUnavailable)
+	}))
+	defer srv.Close()
+
+	var retries atomic.Int32
+	c := sse.NewClient(srv.URL)
+	c.ReconnectNotify = func(err error, d time.Duration) {
+		retries.Add(1)
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+
+	done := make(chan error, 1)
+	go func() {
+		done <- c.SubscribeWithContext(ctx, "test", func(msg *sse.Event) {})
+	}()
+
+	// Wait until we have seen at least 3 retries, then cancel.
+	require.Eventually(t, func() bool {
+		return retries.Load() >= 3
+	}, 30*time.Second, 50*time.Millisecond,
+		"client should have retried at least 3 times with the default strategy")
+
+	cancel()
+	err := <-done
+
+	// The subscription must have been stopped by context cancellation, NOT by
+	// MaxElapsedTime expiry. Context cancellation wraps the error in a backoff
+	// stop; the unwrapped cause is context.Canceled.
+	assert.ErrorIs(t, err, context.Canceled,
+		"default strategy must retry until context cancel; got: %v", err)
+}
+
