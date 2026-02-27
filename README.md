@@ -46,6 +46,10 @@ All fixes are covered by regression tests and verified with the race detector.
 | **Client** | Context passed into `startReadLoop`; goroutine exits promptly on context cancel | — |
 | **Client** | External errors wrapped with `%w` for `errors.Is`/`errors.As` compatibility | — |
 | **Client** | `Method` and `Body` fields added; supports POST and any HTTP method with a per-attempt body factory | [#153](https://github.com/r3labs/sse/issues/153) |
+| **Parser** | CRLF treated as single line ending per WHATWG WP-004; all 7 event-terminator forms handled | — |
+| **Client** | `Last-Event-ID` header value sanitized — NULL, LF, CR characters stripped before sending | — |
+| **Server** | Empty `id:` field (`IDPresent=true`, empty value) emits bare `id:\n` to reset client LastEventID | — |
+| **Server** | Per-subscriber goroutine leak on stream shutdown fixed; `sub.close()` selects on `streamQuit` | — |
 
 ## Migrating from r3labs/sse
 

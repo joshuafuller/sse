@@ -201,7 +201,7 @@ Current compliance status as of 2026-02-26. Status definitions:
 | WP-001 | MIME type is `text/event-stream` | COMPLIANT | — |
 | WP-002 | Stream is UTF-8 | COMPLIANT | — |
 | WP-003 | Strip leading BOM | COMPLIANT | sse-cye (fixed) |
-| WP-004 | CR/LF/CRLF line endings | PARTIAL | — |
+| WP-004 | CR/LF/CRLF line endings | COMPLIANT | sse-frd (fixed: splitLines treats CRLF as single line ending; containsDoubleNewline handles all 7 terminator forms) |
 | WP-005 | No block buffering | COMPLIANT | — |
 | WP-006 | Blank line triggers dispatch | COMPLIANT | — |
 | WP-007 | Comment lines ignored | COMPLIANT | — |
@@ -222,7 +222,7 @@ Current compliance status as of 2026-02-26. Status definitions:
 | CL-001 | Send `Accept: text/event-stream` | COMPLIANT | — |
 | CL-002 | Send `Cache-Control: no-cache` | COMPLIANT | — |
 | CL-003 | Send `Last-Event-ID` header when non-empty | COMPLIANT | — |
-| CL-004 | `Last-Event-ID` value must not contain NULL/LF/CR | UNTESTED | — |
+| CL-004 | `Last-Event-ID` value must not contain NULL/LF/CR | COMPLIANT | sse-482 (fixed: header value sanitized — NULL/LF/CR stripped before setting header) |
 | CL-005 | Validate `Content-Type: text/event-stream` | COMPLIANT | sse-fk2 (fixed) |
 | CL-006 | HTTP 204 → fail permanently | COMPLIANT | sse-a67 (fixed) |
 | CL-007 | Non-200 (non-redirect) → fail connection | COMPLIANT | sse-6v2 (fixed) |
@@ -242,26 +242,26 @@ Current compliance status as of 2026-02-26. Status definitions:
 | SV-004 | Set `Connection: keep-alive` | COMPLIANT | — |
 | SV-005 | Events terminated by blank line | COMPLIANT | — |
 | SV-006 | `id:` only emitted when event has non-empty ID | COMPLIANT | sse-0s5 (fixed) |
-| SV-007 | Empty `id:` resets client's last event ID | UNTESTED | — |
+| SV-007 | Empty `id:` resets client's last event ID | COMPLIANT | sse-abh (fixed: serializer emits bare `id:\n` when IDPresent=true and ID is empty; end-to-end test added) |
 | SV-008 | Multi-line data → multiple `data:` fields | COMPLIANT | — |
 | SV-009 | Comment/keepalive line format | COMPLIANT | — |
 | SV-010 | Send keepalive comment ~every 15s | N/A | — |
-| SV-011 | `retry:` contains only ASCII digits | UNTESTED | — |
+| SV-011 | `retry:` contains only ASCII digits | COMPLIANT | sse-b11 (fixed: retry field verified to contain only ASCII digits; test added) |
 | SV-012 | `Last-Event-ID` treated as opaque string (not numeric) | COMPLIANT | sse-2et (fixed) |
 | SV-013 | HTTP 204 to stop reconnecting | N/A | — |
 | SV-014 | Unknown stream → 4xx not 5xx | COMPLIANT | sse-2et (fixed) |
 | SV-015 | Requires `http.Flusher` support | COMPLIANT | — |
 | NF-001 | Stream operations goroutine-safe | COMPLIANT | sse-jsb (fixed) |
-| NF-002 | Subscriber add/remove no data races | PARTIAL | sse-svu |
+| NF-002 | Subscriber add/remove no data races | COMPLIANT | sse-8er (fixed: sub.close() uses select on streamQuit to avoid blocking after stream shutdown) |
 | NF-003 | Context cancel stops all goroutines | COMPLIANT | sse-1vw, sse-c6q (fixed: context propagated into readLoop) |
 | NF-004 | Unsubscribe does not deadlock | COMPLIANT | sse-vuw (fixed) |
-| NF-005 | Server Close() no goroutine leaks | PARTIAL | sse-svu |
+| NF-005 | Server Close() no goroutine leaks | COMPLIANT | sse-8er (fixed: Server.Close() cleanly exits stream.run() goroutines; no leaks verified by test) |
 | NF-006 | EventLog bounded (max size / TTL) | COMPLIANT | sse-eg7 (MaxEntries), sse-bbt (EventTTL field in Server — both done) |
 | NF-007 | Scanner buffer configurable max size | COMPLIANT | sse-5xl (ClientMaxBufferSize functional option — already implemented) |
-| NF-008 | Connection close releases all resources | PARTIAL | sse-svu |
+| NF-008 | Connection close releases all resources | COMPLIANT | sse-8er (fixed: subscriber channels cleaned up on deregister; select on streamQuit prevents resource leak) |
 | NF-009 | Writer errors checked in ServeHTTP | COMPLIANT | sse-6lv (fixed) |
 | NF-010 | External errors wrapped with context | COMPLIANT | sse-71z (fixed: errors wrapped with %w) |
 | NF-011 | Scanner overflow surfaced (not silent) | COMPLIANT | sse-2e2 (fixed) |
 | NF-012 | Public API has test coverage | COMPLIANT | — |
 | NF-013 | Tests are deterministic | COMPLIANT | sse-zfc (fixed, event-driven sync) |
-| NF-014 | Tests in external package (`sse_test`) | PARTIAL | sse-4pn (event_log_test.go migrated; others blocked on unexported symbols) |
+| NF-014 | Tests in external package (`sse_test`) | PARTIAL | sse-qyu (in progress — http/client/stream tests still pending migration, kept in *_internal_test.go files) |

@@ -437,31 +437,6 @@ func TestClientComment(t *testing.T) {
 	c.Unsubscribe(events)
 }
 
-func TestTrimHeader(t *testing.T) {
-	tests := []struct {
-		input []byte
-		want  []byte
-	}{
-		{
-			input: []byte("data: real data"),
-			want:  []byte("real data"),
-		},
-		{
-			input: []byte("data:real data"),
-			want:  []byte("real data"),
-		},
-		{
-			input: []byte("data:"),
-			want:  []byte(""),
-		},
-	}
-
-	for _, tc := range tests {
-		got := trimHeader(len(headerData), tc.input)
-		require.Equal(t, tc.want, got)
-	}
-}
-
 func TestSubscribeWithContextDone(t *testing.T) {
 	// Use an isolated server that streams events on demand so we don't
 	// depend on the global setup/cleanup helpers or their timing.
