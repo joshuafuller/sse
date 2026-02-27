@@ -14,47 +14,13 @@ r3labs authors for the foundational work.
 
 ## Changes from Upstream
 
-All fixes are covered by regression tests and verified with the race detector.
+This fork ships **40+ fixes** across the server, client, and parser — addressing
+every open issue and unmerged pull request in the upstream
+[r3labs/sse](https://github.com/r3labs/sse) tracker. All fixes are covered by
+regression tests and verified with the race detector.
 
-| Area | Change | Upstream Issue |
-|------|--------|----------------|
-| **Server** | Non-blocking fan-out dispatch — slow subscribers no longer stall the entire stream | — |
-| **Server** | `id:` field omitted when event has no ID; previously always emitted, corrupting client LastEventID | — |
-| **Server** | Missing stream with `AutoStream=false` returns HTTP 404 instead of 500 | [#33](https://github.com/r3labs/sse/issues/33) |
-| **Server** | `Last-Event-ID` request header accepted as opaque string; previously rejected non-numeric values with 400 | [#33](https://github.com/r3labs/sse/issues/33) |
-| **Server** | Empty-data events use `continue` instead of `break` — subscriber loop no longer terminates early | [#163](https://github.com/r3labs/sse/issues/163) |
-| **Server** | All `fmt.Fprintf` write errors in `ServeHTTP` are now checked; loop exits on client disconnect | — |
-| **Server** | `EventLog` bounded by configurable `MaxEntries`; previously grew unboundedly with `AutoReplay` | [#169](https://github.com/r3labs/sse/issues/169) |
-| **Server** | Per-stream `SetOnSubscribe`/`SetOnUnsubscribe` callbacks available on `*Stream` | [#138](https://github.com/r3labs/sse/issues/138) |
-| **Server** | `OnSubscribeHTTP` callback exposes `http.ResponseWriter` to send initial messages at connect time | [#177](https://github.com/r3labs/sse/issues/177) |
-| **Server** | `MaxSubscribers` field on `*Stream`; returns 429 when exceeded | [#172](https://github.com/r3labs/sse/issues/172) |
-| **Server** | `ServeHTTPWithFlusher` method for Fiber/fasthttp compatibility | [#139](https://github.com/r3labs/sse/issues/139) |
-| **Client** | EOF and server-close now trigger reconnect instead of treating stream end as success | [#76](https://github.com/r3labs/sse/issues/76) |
-| **Client** | HTTP 204 No Content causes permanent stop (no reconnect) | — |
-| **Client** | `Content-Type` validated on response; non-`text/event-stream` fails permanently | — |
-| **Client** | `retry:` field value applied as reconnect delay in milliseconds | — |
-| **Client** | `id:` with empty value correctly resets `LastEventID` (vs. absent `id:` which preserves it) | — |
-| **Client** | `id:` field value containing U+0000 NULL is ignored per spec | — |
-| **Client** | `SubscribeWithContext` returns `context.Canceled` when context is cancelled | [#131](https://github.com/r3labs/sse/issues/131) |
-| **Client** | `erChan` buffered (`size=1`) — `readLoop` goroutine no longer leaks when consumer exits early | — |
-| **Client** | Scanner buffer overflow returns `bufio.ErrTooLong` instead of `io.EOF` | [#158](https://github.com/r3labs/sse/issues/158) |
-| **Client** | ID-only events (no `data:`) not dispatched to handler per WHATWG spec | [#163](https://github.com/r3labs/sse/issues/163) |
-| **Parser** | Leading UTF-8 BOM stripped from event stream before parsing | — |
-| **Testing** | `TestSubscribeWithContextDone` rewritten with event-driven sync; no more timing-based flakiness | [#186](https://github.com/r3labs/sse/issues/186) |
-| **Client** | `OnConnect` callback fires immediately after HTTP 200 response instead of on first event | [#149](https://github.com/r3labs/sse/issues/149) |
-| **Client** | `io.ErrUnexpectedEOF` (keepalive timeout) triggers silent reconnect; `disconnectcb` not called spuriously | — |
-| **Client** | Non-200 responses return `*StreamError` with `StatusCode` and `Body` fields; inspectable via `errors.As` | [#168](https://github.com/r3labs/sse/issues/168) |
-| **Client** | Backoff resets after each successful connection; next reconnect starts from minimum delay | — |
-| **Client** | Context passed into `startReadLoop`; goroutine exits promptly on context cancel | — |
-| **Client** | External errors wrapped with `%w` for `errors.Is`/`errors.As` compatibility | — |
-| **Client** | `Method` and `Body` fields added; supports POST and any HTTP method with a per-attempt body factory | [#153](https://github.com/r3labs/sse/issues/153) |
-| **Parser** | CRLF treated as single line ending per WHATWG WP-004; all 7 event-terminator forms handled | — |
-| **Client** | `Last-Event-ID` header value sanitized — NULL, LF, CR characters stripped before sending | — |
-| **Server** | Empty `id:` field (`IDPresent=true`, empty value) emits bare `id:\n` to reset client LastEventID | — |
-| **Server** | Per-subscriber goroutine leak on stream shutdown fixed; `sub.close()` selects on `streamQuit` | — |
-| **Server** | `Cache-Control` response header changed from `no-cache` to `no-store` per WHATWG SSE spec | — |
-| **Client** | `Connected` bool field replaced by `Connected() bool` method backed by `atomic.Bool`; eliminates data race under concurrent subscribe calls | — |
-| **Client** | `fmt.Errorf` in base64 decode path changed from `%s` to `%w`; decode errors now chain correctly with `errors.Is`/`errors.As` | — |
+See **[CHANGELOG.md](CHANGELOG.md)** for the complete list with descriptions
+and links to every upstream issue and PR.
 
 ## Migrating from r3labs/sse
 
