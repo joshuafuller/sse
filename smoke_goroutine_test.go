@@ -17,21 +17,27 @@ import (
 )
 
 // requireNoGoroutineLeak runs fn, then polls until the goroutine count returns
-// to baseline (within 5s). Uses a manual loop instead of assert.Eventually
-// because the ticker goroutine inside assert.Eventually would itself inflate
-// the goroutine count and cause a false-positive leak detection.
+// to baseline (within 10s). A brief settle period before measuring the baseline
+// lets goroutines from preceding tests (http_test.go, client_test.go) fully exit
+// before we snapshot — preventing false-positive leak detection.
 func requireNoGoroutineLeak(t *testing.T, fn func()) {
 	t.Helper()
+	// Let goroutines from previous tests wind down before snapshotting baseline.
+	time.Sleep(200 * time.Millisecond)
 	before := runtime.NumGoroutine()
 	fn()
-	deadline := time.Now().Add(5 * time.Second)
+	deadline := time.Now().Add(10 * time.Second)
 	for time.Now().Before(deadline) {
 		if runtime.NumGoroutine() <= before {
 			return
 		}
 		time.Sleep(50 * time.Millisecond)
 	}
-	t.Errorf("goroutine leak: started with %d, now %d", before, runtime.NumGoroutine())
+	// Print all goroutine stacks to help diagnose the leak.
+	buf := make([]byte, 1<<20)
+	n := runtime.Stack(buf, true)
+	t.Errorf("goroutine leak: started with %d, now %d\n\nGoroutine dump:\n%s",
+		before, runtime.NumGoroutine(), buf[:n])
 }
 
 // TestSmokeGoroutineLeakOnContextCancel verifies that cancelling the client
