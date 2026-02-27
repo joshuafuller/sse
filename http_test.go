@@ -214,7 +214,7 @@ func TestHTTPStreamHandlerNonNumericLastEventID(t *testing.T) {
 
 	resp, err := http.DefaultClient.Do(req)
 	require.NoError(t, err)
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 
 	// Should NOT be 400; the server must accept non-numeric IDs.
 	assert.NotEqual(t, http.StatusBadRequest, resp.StatusCode,
@@ -236,7 +236,7 @@ func TestHTTPStreamHandlerMissingStreamReturns404(t *testing.T) {
 	// Request a stream that does not exist with AutoStream disabled.
 	resp, err := http.Get(server.URL + "/events?stream=nonexistent")
 	require.NoError(t, err)
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 
 	assert.Equal(t, http.StatusNotFound, resp.StatusCode,
 		"Missing stream should return 404, not 500")
@@ -258,7 +258,7 @@ func TestHTTPStreamHandlerEmptyEventDoesNotBreakLoop(t *testing.T) {
 	// Make a raw HTTP request to the SSE endpoint
 	resp, err := http.Get(server.URL + "/events?stream=test")
 	require.NoError(t, err)
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 	require.Equal(t, http.StatusOK, resp.StatusCode)
 
 	// Wait for subscriber to register

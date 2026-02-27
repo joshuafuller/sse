@@ -14,7 +14,7 @@ import (
 // DefaultBufferSize size of the queue that holds the streams messages.
 const DefaultBufferSize = 1024
 
-// Server Is our main struct
+// Server Is our main struct.
 type Server struct {
 	// Extra headers adding to the HTTP response to each client
 	Headers map[string]string
@@ -45,7 +45,7 @@ type Server struct {
 	muStreams sync.RWMutex
 }
 
-// New will create a server and setup defaults
+// New will create a server and setup defaults.
 func New() *Server {
 	return &Server{
 		BufferSize: DefaultBufferSize,
@@ -56,7 +56,7 @@ func New() *Server {
 	}
 }
 
-// NewWithCallback will create a server and setup defaults with callback function
+// NewWithCallback will create a server and setup defaults with callback function.
 func NewWithCallback(onSubscribe, onUnsubscribe func(streamID string, sub *Subscriber)) *Server {
 	return &Server{
 		BufferSize:    DefaultBufferSize,
@@ -69,7 +69,7 @@ func NewWithCallback(onSubscribe, onUnsubscribe func(streamID string, sub *Subsc
 	}
 }
 
-// Close shuts down the server, closes all of the streams and connections
+// Close shuts down the server, closes all of the streams and connections.
 func (s *Server) Close() {
 	s.muStreams.Lock()
 	defer s.muStreams.Unlock()
@@ -80,7 +80,7 @@ func (s *Server) Close() {
 	}
 }
 
-// CreateStream will create a new stream and register it
+// CreateStream will create a new stream and register it.
 func (s *Server) CreateStream(id string) *Stream {
 	s.muStreams.Lock()
 	defer s.muStreams.Unlock()
@@ -97,7 +97,7 @@ func (s *Server) CreateStream(id string) *Stream {
 	return str
 }
 
-// RemoveStream will remove a stream
+// RemoveStream will remove a stream.
 func (s *Server) RemoveStream(id string) {
 	s.muStreams.Lock()
 	defer s.muStreams.Unlock()
@@ -108,7 +108,7 @@ func (s *Server) RemoveStream(id string) {
 	}
 }
 
-// StreamExists checks whether a stream by a given id exists
+// StreamExists checks whether a stream by a given id exists.
 func (s *Server) StreamExists(id string) bool {
 	return s.getStream(id) != nil
 }

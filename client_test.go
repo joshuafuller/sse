@@ -81,7 +81,7 @@ func newServer401() *sse.Server {
 	srv = sse.New()
 
 	mux := http.NewServeMux()
-	mux.HandleFunc("/events", func(w http.ResponseWriter, r *http.Request) {
+	mux.HandleFunc("/events", func(w http.ResponseWriter, _ *http.Request) {
 		w.WriteHeader(http.StatusUnauthorized)
 	})
 
@@ -373,7 +373,7 @@ func TestClientUnsubscribe401(t *testing.T) {
 func TestClient204NoReconnect(t *testing.T) {
 	// HTTP 204 must stop reconnection immediately — spec §9.2.3.
 	var requests int
-	tsrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	tsrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		requests++
 		w.WriteHeader(http.StatusNoContent)
 	}))

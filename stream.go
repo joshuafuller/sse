@@ -63,7 +63,7 @@ func (str *Stream) SetOnUnsubscribe(fn func(streamID string, sub *Subscriber)) {
 	str.mu.Unlock()
 }
 
-// newStream returns a new stream
+// newStream returns a new stream.
 func newStream(id string, buffSize int, replay, isAutoStream bool, onSubscribe, onUnsubscribe func(string, *Subscriber)) *Stream {
 	return &Stream{
 		ID:            id,

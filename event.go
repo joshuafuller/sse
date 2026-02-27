@@ -12,7 +12,7 @@ import (
 	"time"
 )
 
-// Event holds all of the event source fields
+// Event holds all of the event source fields.
 type Event struct {
 	timestamp time.Time
 	IDPresent bool   // true if an id: field was seen in this event

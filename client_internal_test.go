@@ -56,7 +56,7 @@ func TestTrimHeader(t *testing.T) {
 // TestRetryFieldIgnoresNonNumeric verifies that a non-numeric retry: field
 // value is silently ignored (retryDelay stays at zero).
 func TestRetryFieldIgnoresNonNumeric(t *testing.T) {
-	tsrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	tsrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		w.Header().Set("Content-Type", "text/event-stream")
 		w.WriteHeader(http.StatusOK)
 		fmt.Fprint(w, "retry: notanumber\ndata: hello\n\n")

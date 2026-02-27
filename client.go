@@ -39,19 +39,20 @@ func (e *StreamError) Error() string {
 	return fmt.Sprintf("could not connect to stream: %s", http.StatusText(e.StatusCode))
 }
 
+// ClientMaxBufferSize sets the maximum buffer size for reading SSE events.
 func ClientMaxBufferSize(s int) func(c *Client) {
 	return func(c *Client) {
 		c.maxBufferSize = s
 	}
 }
 
-// ConnCallback defines a function to be called on a particular connection event
+// ConnCallback defines a function to be called on a particular connection event.
 type ConnCallback func(c *Client)
 
-// ResponseValidator validates a response
+// ResponseValidator validates a response.
 type ResponseValidator func(c *Client, resp *http.Response) error
 
-// Client handles an incoming server stream
+// Client handles an incoming server stream.
 type Client struct {
 	Retry time.Time
 
@@ -93,7 +94,7 @@ type Client struct {
 	Connected         bool
 }
 
-// NewClient creates a new client
+// NewClient creates a new client.
 func NewClient(url string, opts ...func(c *Client)) *Client {
 	c := &Client{
 		URL:           url,
@@ -193,12 +194,12 @@ func (c *Client) SubscribeWithContext(ctx context.Context, stream string, handle
 	return backoff.RetryNotify(operation, b, c.ReconnectNotify)
 }
 
-// SubscribeChan sends all events to the provided channel
+// SubscribeChan sends all events to the provided channel.
 func (c *Client) SubscribeChan(stream string, ch chan *Event) error {
 	return c.SubscribeChanWithContext(context.Background(), stream, ch)
 }
 
-// SubscribeChanWithContext sends all events to the provided channel with context
+// SubscribeChanWithContext sends all events to the provided channel with context.
 func (c *Client) SubscribeChanWithContext(ctx context.Context, stream string, ch chan *Event) error {
 	var connected bool
 	errch := make(chan error)
@@ -375,27 +376,27 @@ func (c *Client) readLoop(ctx context.Context, reader *EventStreamReader, outCh 
 	}
 }
 
-// SubscribeRaw to an sse endpoint
+// SubscribeRaw to an sse endpoint.
 func (c *Client) SubscribeRaw(handler func(msg *Event)) error {
 	return c.Subscribe("", handler)
 }
 
-// SubscribeRawWithContext to an sse endpoint with context
+// SubscribeRawWithContext to an sse endpoint with context.
 func (c *Client) SubscribeRawWithContext(ctx context.Context, handler func(msg *Event)) error {
 	return c.SubscribeWithContext(ctx, "", handler)
 }
 
-// SubscribeChanRaw sends all events to the provided channel
+// SubscribeChanRaw sends all events to the provided channel.
 func (c *Client) SubscribeChanRaw(ch chan *Event) error {
 	return c.SubscribeChan("", ch)
 }
 
-// SubscribeChanRawWithContext sends all events to the provided channel with context
+// SubscribeChanRawWithContext sends all events to the provided channel with context.
 func (c *Client) SubscribeChanRawWithContext(ctx context.Context, ch chan *Event) error {
 	return c.SubscribeChanWithContext(ctx, "", ch)
 }
 
-// Unsubscribe unsubscribes a channel
+// Unsubscribe unsubscribes a channel.
 func (c *Client) Unsubscribe(ch chan *Event) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
@@ -409,12 +410,12 @@ func (c *Client) Unsubscribe(ch chan *Event) {
 	}
 }
 
-// OnDisconnect specifies the function to run when the connection disconnects
+// OnDisconnect specifies the function to run when the connection disconnects.
 func (c *Client) OnDisconnect(fn ConnCallback) {
 	c.disconnectcb = fn
 }
 
-// OnConnect specifies the function to run when the connection is successful
+// OnConnect specifies the function to run when the connection is successful.
 func (c *Client) OnConnect(fn ConnCallback) {
 	c.connectedcb = fn
 }

@@ -9,7 +9,7 @@ import (
 	"time"
 )
 
-// EventLog holds all of previous events
+// EventLog holds all of previous events.
 type EventLog struct {
 	// MaxEntries limits the number of events retained. When a new event
 	// would exceed this cap the oldest entry is evicted. Zero means unlimited.
@@ -17,7 +17,7 @@ type EventLog struct {
 	entries    []*Event
 }
 
-// Add event to eventlog
+// Add event to eventlog.
 func (e *EventLog) Add(ev *Event) {
 	if !ev.hasContent() {
 		return
@@ -32,12 +32,12 @@ func (e *EventLog) Add(ev *Event) {
 	}
 }
 
-// Clear events from eventlog
+// Clear events from eventlog.
 func (e *EventLog) Clear() {
 	e.entries = nil
 }
 
-// Replay events to a subscriber
+// Replay events to a subscriber.
 func (e *EventLog) Replay(s *Subscriber) {
 	for i := 0; i < len(e.entries); i++ {
 		id, _ := strconv.Atoi(string(e.entries[i].ID))
