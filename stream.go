@@ -25,6 +25,13 @@ type Stream struct {
 	AutoReplay   bool
 	isAutoStream bool
 
+	// MaxSubscribers caps the number of concurrent subscribers for this
+	// stream. When MaxSubscribers > 0 and the current subscriber count is
+	// at or above the cap, addSubscriber returns (nil, false) and the
+	// caller should respond with HTTP 429 Too Many Requests.
+	// A value of 0 (the default) means unlimited.
+	MaxSubscribers int
+
 	// Specifies the function to run when client subscribe or un-subscribe.
 	// These are set from the server-level callbacks via newStream.
 	OnSubscribe   func(streamID string, sub *Subscriber)
@@ -140,8 +147,15 @@ func (str *Stream) getSubIndex(sub *Subscriber) int {
 	return -1
 }
 
-// addSubscriber will create a new subscriber on a stream
-func (str *Stream) addSubscriber(eventid int, url *url.URL) *Subscriber {
+// addSubscriber will create a new subscriber on a stream.
+// It returns (subscriber, true) on success, or (nil, false) when the stream's
+// MaxSubscribers cap is exceeded (caller should respond with 429).
+func (str *Stream) addSubscriber(eventid int, url *url.URL) (*Subscriber, bool) {
+	// Enforce MaxSubscribers cap before allocating anything.
+	if str.MaxSubscribers > 0 && int(atomic.LoadInt32(&str.subscriberCount)) >= str.MaxSubscribers {
+		return nil, false
+	}
+
 	atomic.AddInt32(&str.subscriberCount, 1)
 	sub := &Subscriber{
 		eventid:    eventid,
@@ -167,7 +181,7 @@ func (str *Stream) addSubscriber(eventid int, url *url.URL) *Subscriber {
 		go perStreamSub(str.ID, sub)
 	}
 
-	return sub
+	return sub, true
 }
 
 func (str *Stream) removeSubscriber(i int) {

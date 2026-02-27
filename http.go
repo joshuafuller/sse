@@ -35,12 +35,18 @@ func (ew *errWriter) print(s string) {
 
 // ServeHTTP serves new connections with events for a given stream ...
 func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
-	flusher, err := w.(http.Flusher)
-	if !err {
+	flusher, ok := w.(http.Flusher)
+	if !ok {
 		http.Error(w, "Streaming unsupported!", http.StatusInternalServerError)
 		return
 	}
+	s.ServeHTTPWithFlusher(w, r, flusher)
+}
 
+// ServeHTTPWithFlusher serves SSE to frameworks that implement flushing
+// separately from http.ResponseWriter (e.g. Fiber, fasthttp adapters).
+// The flusher parameter must not be nil.
+func (s *Server) ServeHTTPWithFlusher(w http.ResponseWriter, r *http.Request, flusher http.Flusher) {
 	w.Header().Set("Content-Type", "text/event-stream")
 	w.Header().Set("Cache-Control", "no-cache")
 	w.Header().Set("Connection", "keep-alive")
@@ -75,8 +81,12 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		eventid, _ = strconv.Atoi(id)
 	}
 
-	// Create the stream subscriber
-	sub := stream.addSubscriber(eventid, r.URL)
+	// Create the stream subscriber; reject if the stream is at capacity.
+	sub, ok := stream.addSubscriber(eventid, r.URL)
+	if !ok {
+		http.Error(w, "Too many subscribers!", http.StatusTooManyRequests)
+		return
+	}
 
 	go func() {
 		<-r.Context().Done()

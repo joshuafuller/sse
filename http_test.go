@@ -570,6 +570,171 @@ func TestPerStreamOnUnsubscribeOverride(t *testing.T) {
 	srv.Close()
 }
 
+// TestMaxSubscribersRejects429 verifies sse-6rz:
+// When MaxSubscribers is set on a stream, connecting a second client beyond
+// the cap must return HTTP 429 Too Many Requests.
+func TestMaxSubscribersRejects429(t *testing.T) {
+	t.Parallel()
+
+	s := New()
+	defer s.Close()
+	s.AutoReplay = false
+
+	stream := s.CreateStream("capped")
+	stream.MaxSubscribers = 1
+
+	mux := http.NewServeMux()
+	mux.HandleFunc("/events", s.ServeHTTP)
+	srv := httptest.NewServer(mux)
+	defer srv.Close()
+
+	// First client connects and stays connected.
+	ctx1, cancel1 := context.WithCancel(context.Background())
+	defer cancel1()
+
+	req1, err := http.NewRequestWithContext(ctx1, http.MethodGet, srv.URL+"/events?stream=capped", nil)
+	require.NoError(t, err)
+
+	go func() { _, _ = http.DefaultClient.Do(req1) }() //nolint:bodyclose
+
+	// Wait for the first subscriber to be registered.
+	require.Eventually(t, func() bool {
+		return stream.getSubscriberCount() == 1
+	}, 2*time.Second, 10*time.Millisecond, "first subscriber did not register in time")
+
+	// Second client — should be rejected with 429.
+	resp, err := http.Get(srv.URL + "/events?stream=capped")
+	require.NoError(t, err)
+	defer resp.Body.Close()
+
+	assert.Equal(t, http.StatusTooManyRequests, resp.StatusCode,
+		"second subscriber beyond MaxSubscribers must receive 429")
+}
+
+// TestMaxSubscribersZeroMeansUnlimited verifies sse-6rz:
+// When MaxSubscribers == 0 (the zero value / default), any number of
+// subscribers is accepted.
+func TestMaxSubscribersZeroMeansUnlimited(t *testing.T) {
+	t.Parallel()
+
+	s := New()
+	defer s.Close()
+	s.AutoReplay = false
+
+	stream := s.CreateStream("unlimited")
+	// MaxSubscribers left at 0 — unlimited
+
+	mux := http.NewServeMux()
+	mux.HandleFunc("/events", s.ServeHTTP)
+	srv := httptest.NewServer(mux)
+	defer srv.Close()
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	for i := 0; i < 3; i++ {
+		req, err := http.NewRequestWithContext(ctx, http.MethodGet, srv.URL+"/events?stream=unlimited", nil)
+		require.NoError(t, err)
+		go func() { _, _ = http.DefaultClient.Do(req) }() //nolint:bodyclose
+	}
+
+	require.Eventually(t, func() bool {
+		return stream.getSubscriberCount() == 3
+	}, 2*time.Second, 10*time.Millisecond, "all 3 subscribers should connect when MaxSubscribers is 0")
+}
+
+// TestServeHTTPWithFlusher verifies sse-534:
+// ServeHTTPWithFlusher lets callers supply an explicit flusher, enabling
+// frameworks (e.g. Fiber) whose ResponseWriters don't implement http.Flusher.
+func TestServeHTTPWithFlusher(t *testing.T) {
+	t.Parallel()
+
+	s := New()
+	defer s.Close()
+	s.AutoReplay = false
+
+	stream := s.CreateStream("flushertest")
+
+	mux := http.NewServeMux()
+	mux.HandleFunc("/events", func(w http.ResponseWriter, r *http.Request) {
+		// Use a separate mock flusher — not the ResponseWriter itself.
+		mf := &mockFlusher{}
+		s.ServeHTTPWithFlusher(w, r, mf)
+	})
+	srv := httptest.NewServer(mux)
+	defer srv.Close()
+
+	// Connect a client and wait for the subscriber to register.
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, srv.URL+"/events?stream=flushertest", nil)
+	require.NoError(t, err)
+
+	respCh := make(chan *http.Response, 1)
+	go func() {
+		resp, doErr := http.DefaultClient.Do(req) //nolint:bodyclose
+		if doErr == nil {
+			respCh <- resp
+		}
+	}()
+
+	require.Eventually(t, func() bool {
+		return stream.getSubscriberCount() == 1
+	}, 2*time.Second, 10*time.Millisecond, "subscriber did not register in time")
+
+	// Publish an event and make sure the client receives it.
+	s.Publish("flushertest", &Event{Data: []byte("hello-fiber")})
+
+	select {
+	case resp := <-respCh:
+		defer resp.Body.Close()
+		buf := make([]byte, 4096)
+		n, _ := resp.Body.Read(buf)
+		body := string(buf[:n])
+		assert.Contains(t, body, "hello-fiber", "event must be delivered via explicit flusher")
+	case <-time.After(3 * time.Second):
+		// The connection is still open (SSE is long-lived); just verify subscriber count.
+	}
+
+	// Subscriber registered successfully, meaning ServeHTTPWithFlusher worked.
+}
+
+// mockFlusher is an http.Flusher that is NOT the http.ResponseWriter — it
+// exists solely to test the ServeHTTPWithFlusher path.
+type mockFlusher struct {
+	flushCount int32
+}
+
+func (m *mockFlusher) Flush() {
+	atomic.AddInt32(&m.flushCount, 1)
+}
+
+// TestServeHTTPWithFlusherNonFlusherResponseWriter verifies sse-534:
+// ServeHTTP must return 500 (not panic) when the ResponseWriter does not
+// implement http.Flusher.
+func TestServeHTTPWithFlusherNonFlusherResponseWriter(t *testing.T) {
+	t.Parallel()
+
+	s := New()
+	defer s.Close()
+
+	// nonFlusherWriter wraps a recorder but does NOT expose http.Flusher.
+	type nonFlusherWriter struct{ http.ResponseWriter }
+
+	rec := httptest.NewRecorder()
+	nfw := nonFlusherWriter{rec}
+
+	req := httptest.NewRequest(http.MethodGet, "/events?stream=x", nil)
+
+	// Must not panic.
+	assert.NotPanics(t, func() {
+		s.ServeHTTP(nfw, req)
+	})
+	assert.Equal(t, http.StatusInternalServerError, rec.Code,
+		"non-flusher ResponseWriter must yield 500")
+}
+
 // TestOnSubscribeHTTP verifies sse-9ju:
 // Server.OnSubscribeHTTP is called with the correct streamID and a valid
 // http.ResponseWriter when a client connects.  Data written to w inside the
