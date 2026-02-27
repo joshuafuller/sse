@@ -122,8 +122,17 @@ func (s *Server) ServeHTTPWithFlusher(w http.ResponseWriter, r *http.Request, fl
 		}
 
 		if len(ev.Data) > 0 {
+			// id: field serialization rules (WHATWG SSE §9.2.5):
+			//   - len(ev.ID) > 0          → emit "id: <value>\n" (normal case;
+			//                               includes backward-compat callers that
+			//                               set ID without setting IDPresent).
+			//   - IDPresent && len == 0   → emit bare "id:\n" to reset the
+			//                               client's last-event-ID to empty.
+			//   - !IDPresent && len == 0  → omit the id: field entirely.
 			if len(ev.ID) > 0 {
 				ew.printf("id: %s\n", ev.ID)
+			} else if ev.IDPresent {
+				ew.print("id:\n")
 			}
 
 			if s.SplitData {

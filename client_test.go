@@ -1617,6 +1617,203 @@ func TestClientPOSTWithBody(t *testing.T) {
 	assert.Equal(t, payload, gotBody, "request body must match payload")
 }
 
+// --- sse-frd: WP-004 — CRLF as single line ending ---
+
+// TestProcessEventCRLF verifies that CRLF (\r\n) is treated as a SINGLE line
+// ending per WHATWG SSE §9.2.6. The bug: bytes.FieldsFunc splits on \r and \n
+// independently, so \r\n produces an empty token between them that may corrupt
+// field parsing or produce ghost empty lines.
+func TestProcessEventCRLF(t *testing.T) {
+	c := NewClient("http://localhost")
+
+	// "data: hello\r\n" is a single field line terminated by CRLF.
+	// The event block itself uses \r\n\r\n as the double-newline terminator.
+	// containsDoubleNewline returns the bytes up to (but not including) the
+	// double newline, so processEvent receives "data: hello\r\n" (with trailing
+	// \r\n still present from the first line boundary inside the block).
+	// With the bug, FieldsFunc("\r\n") produces ["data: hello", ""] — two tokens.
+	// With the fix, splitLines produces ["data: hello"] — one token.
+	raw := []byte("data: hello\r\n")
+	event, err := c.processEvent(raw)
+	require.NoError(t, err)
+	assert.Equal(t, []byte("hello"), event.Data,
+		"CRLF line ending must be treated as single line ending; got Data=%q", event.Data)
+}
+
+// TestProcessEventBareCR verifies that a bare \r is treated as a single line
+// ending, per WHATWG SSE §9.2.6.
+func TestProcessEventBareCR(t *testing.T) {
+	c := NewClient("http://localhost")
+
+	// "data: hello\r" — bare CR terminates the field line.
+	raw := []byte("data: hello\r")
+	event, err := c.processEvent(raw)
+	require.NoError(t, err)
+	assert.Equal(t, []byte("hello"), event.Data,
+		"bare CR must be treated as a single line ending; got Data=%q", event.Data)
+}
+
+// TestProcessEventMixedLineEndings verifies that a single event block
+// containing both CRLF and LF-terminated field lines parses all fields
+// correctly. Mixed line endings appear in the wild.
+func TestProcessEventMixedLineEndings(t *testing.T) {
+	c := NewClient("http://localhost")
+
+	// Two fields: event type on CRLF, data on LF.
+	// processEvent receives the raw bytes without the trailing double-newline.
+	raw := []byte("event: foo\r\ndata: bar\n")
+	event, err := c.processEvent(raw)
+	require.NoError(t, err)
+	assert.Equal(t, []byte("foo"), event.Event,
+		"event field must parse from CRLF-terminated line; got Event=%q", event.Event)
+	assert.Equal(t, []byte("bar"), event.Data,
+		"data field must parse from LF-terminated line; got Data=%q", event.Data)
+}
+
+// TestProcessEventCRLFMultipleDataLines verifies that multiple data: fields
+// separated by CRLF are concatenated correctly (with \n between them) per spec.
+func TestProcessEventCRLFMultipleDataLines(t *testing.T) {
+	c := NewClient("http://localhost")
+
+	// Two data lines with CRLF — must concatenate to "line1\nline2".
+	raw := []byte("data: line1\r\ndata: line2\r\n")
+	event, err := c.processEvent(raw)
+	require.NoError(t, err)
+	assert.Equal(t, []byte("line1\nline2"), event.Data,
+		"multiple CRLF-separated data: lines must concatenate with \\n; got Data=%q", event.Data)
+}
+
+// TestProcessEventCRLFDoesNotProduceSpuriousEmptyFields ensures that a
+// CRLF sequence does NOT produce an empty intermediate token that would be
+// misidentified as a bare "data" line (triggering an empty data append).
+func TestProcessEventCRLFDoesNotProduceSpuriousEmptyFields(t *testing.T) {
+	c := NewClient("http://localhost")
+
+	// With the bug: FieldsFunc on "data: x\r\nevent: y\r\n" yields tokens
+	// ["data: x", "", "event: y", ""] — the empty strings fall through to
+	// the default case and are ignored, but if "data" (without colon) were
+	// matched it would append an extra \n to Data.
+	raw := []byte("data: x\r\nevent: y\r\n")
+	event, err := c.processEvent(raw)
+	require.NoError(t, err)
+	// Data must be exactly "x" — no extra \n from a phantom empty line.
+	assert.Equal(t, []byte("x"), event.Data,
+		"CRLF must not produce empty intermediate tokens; got Data=%q", event.Data)
+	assert.Equal(t, []byte("y"), event.Event,
+		"event field must parse correctly; got Event=%q", event.Event)
+}
+
+// TestEventStreamReaderCRLFSingleLineEnding verifies the end-to-end path:
+// EventStreamReader correctly delivers an event whose fields are CRLF-terminated,
+// and processEvent then parses it cleanly into the correct field values.
+func TestEventStreamReaderCRLFSingleLineEnding(t *testing.T) {
+	// Full SSE event block with CRLF line endings and CRLF+CRLF terminator.
+	// containsDoubleNewline recognises \r\n\r\n (length 4), so the scanner
+	// returns the bytes up to (not including) the \r\n\r\n terminator.
+	input := "data: hello\r\nevent: greet\r\n"
+	// Wrap in \r\n\r\n to form a complete event block as the stream reader sees it.
+	full := input + "\r\n"
+	reader := NewEventStreamReader(strings.NewReader(full), 4096)
+	eventBytes, err := reader.ReadEvent()
+	require.NoError(t, err)
+
+	c := NewClient("http://localhost")
+	event, err := c.processEvent(eventBytes)
+	require.NoError(t, err)
+	assert.Equal(t, []byte("hello"), event.Data,
+		"end-to-end CRLF: Data must be 'hello'; got %q", event.Data)
+	assert.Equal(t, []byte("greet"), event.Event,
+		"end-to-end CRLF: Event must be 'greet'; got %q", event.Event)
+}
+
+// --- sse-482: CL-004 — Sanitize Last-Event-ID header value ---
+
+// TestLastEventIDHeaderSanitized verifies that forbidden characters (NULL,
+// LF, CR) are stripped from the Last-Event-ID header before it is sent,
+// per WHATWG SSE §9.2.1 / WHATWG Fetch §2.2 (header value must not contain
+// U+0000, U+000A, or U+000D).
+func TestLastEventIDHeaderSanitized(t *testing.T) {
+	t.Parallel()
+
+	var capturedID string
+	tsrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		capturedID = r.Header.Get("Last-Event-ID")
+		w.Header().Set("Content-Type", "text/event-stream")
+		w.WriteHeader(http.StatusOK)
+		_, _ = fmt.Fprint(w, "data: hello\n\n")
+		w.(http.Flusher).Flush()
+	}))
+	defer tsrv.Close()
+
+	c := NewClient(tsrv.URL)
+	c.ReconnectStrategy = backoff.WithMaxRetries(backoff.NewExponentialBackOff(), 0)
+
+	// Store a LastEventID that contains all three forbidden characters.
+	// After sanitization the header value should be "abcdef" (forbidden chars dropped).
+	c.LastEventID.Store([]byte("abc\x00\ndef\r"))
+
+	done := make(chan struct{})
+	go func() {
+		c.SubscribeRaw(func(msg *Event) {
+			close(done)
+		})
+	}()
+
+	select {
+	case <-done:
+	case <-time.After(3 * time.Second):
+		t.Fatal("timed out waiting for event")
+	}
+
+	// The header must not contain any forbidden characters.
+	assert.NotContains(t, capturedID, "\x00", "Last-Event-ID header must not contain NULL")
+	assert.NotContains(t, capturedID, "\n", "Last-Event-ID header must not contain LF")
+	assert.NotContains(t, capturedID, "\r", "Last-Event-ID header must not contain CR")
+	// The clean portion of the ID must be preserved.
+	assert.Equal(t, "abcdef", capturedID, "Last-Event-ID must contain only the clean portion of the ID")
+}
+
+// TestLastEventIDHeaderOmittedWhenAllForbidden verifies that if the entire
+// Last-Event-ID value consists of forbidden characters, the header is omitted
+// entirely (not sent as an empty header).
+func TestLastEventIDHeaderOmittedWhenAllForbidden(t *testing.T) {
+	t.Parallel()
+
+	var headerPresent bool
+	tsrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		// net/http canonicalises "Last-Event-ID" to "Last-Event-Id".
+		_, headerPresent = r.Header["Last-Event-Id"]
+		w.Header().Set("Content-Type", "text/event-stream")
+		w.WriteHeader(http.StatusOK)
+		_, _ = fmt.Fprint(w, "data: hello\n\n")
+		w.(http.Flusher).Flush()
+	}))
+	defer tsrv.Close()
+
+	c := NewClient(tsrv.URL)
+	c.ReconnectStrategy = backoff.WithMaxRetries(backoff.NewExponentialBackOff(), 0)
+
+	// All characters are forbidden — the sanitized value will be empty, so the
+	// header should not be sent at all.
+	c.LastEventID.Store([]byte("\x00\n\r"))
+
+	done := make(chan struct{})
+	go func() {
+		c.SubscribeRaw(func(msg *Event) {
+			close(done)
+		})
+	}()
+
+	select {
+	case <-done:
+	case <-time.After(3 * time.Second):
+		t.Fatal("timed out waiting for event")
+	}
+
+	assert.False(t, headerPresent,
+		"Last-Event-ID header must be omitted when all characters are forbidden")
+}
+
 // TestClientBodyFactoryCalledOnReconnect verifies that the Body factory is
 // called once per connection attempt (including reconnects), not just once.
 // The server returns 503 twice then 200 with a single event on the third

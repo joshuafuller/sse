@@ -447,7 +447,19 @@ func (c *Client) request(ctx context.Context, stream string) (*http.Response, er
 
 	lastID, exists := c.LastEventID.Load().([]byte)
 	if exists && lastID != nil {
-		req.Header.Set("Last-Event-ID", string(lastID))
+		// Per WHATWG SSE §9.2.1 / WHATWG Fetch §2.2: the Last-Event-ID header
+		// value MUST NOT contain U+0000 NULL, U+000A LF, or U+000D CR.  Strip
+		// any such characters before setting the header; if nothing survives,
+		// omit the header entirely (net/http rejects headers with these bytes).
+		safe := bytes.Map(func(r rune) rune {
+			if r == 0 || r == '\n' || r == '\r' {
+				return -1 // drop
+			}
+			return r
+		}, lastID)
+		if len(safe) > 0 {
+			req.Header.Set("Last-Event-ID", string(safe))
+		}
 	}
 
 	// Add user specified headers

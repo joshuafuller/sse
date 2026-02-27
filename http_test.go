@@ -15,10 +15,12 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"strconv"
+	"strings"
 	"sync/atomic"
 	"testing"
 	"time"
 
+	backoff "github.com/cenkalti/backoff/v4"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -398,6 +400,199 @@ func TestHTTPServerEmitsIDFieldWhenPresent(t *testing.T) {
 		assert.Contains(t, body, "id: evt-42", "id: field must be emitted when event has an ID")
 	case <-time.After(2 * time.Second):
 		t.Fatal("timed out waiting for event")
+	}
+}
+
+// --- sse-abh: SV-007 — Empty id: resets client LastEventID ---
+
+// TestServerEmptyIDResetsClientLastEventID verifies end-to-end that the server
+// emits a bare "id:\n" line when an event has an explicit empty ID, and that
+// the client's LastEventID is reset to empty after receiving it.
+//
+// Per WHATWG SSE §9.2.6: receiving an "id:" line with an empty value sets the
+// "last event ID buffer" to the empty string.
+func TestServerEmptyIDResetsClientLastEventID(t *testing.T) {
+	t.Parallel()
+
+	s := New()
+	defer s.Close()
+	s.AutoReplay = false
+
+	stream := s.CreateStream("test-empty-id")
+
+	mux := http.NewServeMux()
+	mux.HandleFunc("/events", s.ServeHTTP)
+	srv := httptest.NewServer(mux)
+	defer srv.Close()
+
+	c := NewClient(srv.URL + "/events")
+	// Stop reconnecting automatically so the test exits cleanly.
+	b := backoff.NewExponentialBackOff()
+	b.MaxElapsedTime = 0 // retry indefinitely — we'll cancel via context
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	received := make(chan *Event, 10)
+	go func() {
+		c.SubscribeChanWithContext(ctx, "test-empty-id", received)
+	}()
+
+	// Wait for the subscriber to register.
+	require.Eventually(t, func() bool {
+		return stream.getSubscriberCount() == 1
+	}, 2*time.Second, 10*time.Millisecond, "subscriber did not register in time")
+
+	// Publish event 1: ID "abc", data "first".
+	s.Publish("test-empty-id", &Event{
+		ID:        []byte("abc"),
+		IDPresent: true,
+		Data:      []byte("first"),
+	})
+
+	select {
+	case ev := <-received:
+		require.Equal(t, []byte("first"), ev.Data, "first event data")
+	case <-time.After(2 * time.Second):
+		t.Fatal("timed out waiting for first event")
+	}
+
+	lastID, _ := c.LastEventID.Load().([]byte)
+	assert.Equal(t, []byte("abc"), lastID, "LastEventID should be 'abc' after first event")
+
+	// Publish event 2: explicit empty ID (IDPresent true, ID empty) — should reset LastEventID.
+	s.Publish("test-empty-id", &Event{
+		ID:        []byte{},
+		IDPresent: true,
+		Data:      []byte("second"),
+	})
+
+	select {
+	case ev := <-received:
+		require.Equal(t, []byte("second"), ev.Data, "second event data")
+	case <-time.After(2 * time.Second):
+		t.Fatal("timed out waiting for second event")
+	}
+
+	cancel() // stop client
+
+	lastID2, _ := c.LastEventID.Load().([]byte)
+	assert.Empty(t, lastID2,
+		"LastEventID should be reset to empty after receiving event with empty id: field")
+}
+
+// TestServerEmptyIDEmitsBareLine verifies the raw bytes: when an event has
+// IDPresent==true and empty ID, the server emits "id:\n" (a bare id: line),
+// not the absence of an id: field.
+func TestServerEmptyIDEmitsBareLine(t *testing.T) {
+	t.Parallel()
+
+	s := New()
+	defer s.Close()
+	s.AutoReplay = false
+
+	stream := s.CreateStream("raw-empty-id")
+
+	mux := http.NewServeMux()
+	mux.HandleFunc("/events", s.ServeHTTP)
+	srv := httptest.NewServer(mux)
+	defer srv.Close()
+
+	resp, err := http.Get(srv.URL + "/events?stream=raw-empty-id")
+	require.NoError(t, err)
+	defer resp.Body.Close()
+	require.Equal(t, http.StatusOK, resp.StatusCode)
+
+	// Wait for subscriber.
+	require.Eventually(t, func() bool {
+		return stream.getSubscriberCount() == 1
+	}, 2*time.Second, 10*time.Millisecond, "subscriber did not register in time")
+
+	s.Publish("raw-empty-id", &Event{
+		ID:        []byte{},
+		IDPresent: true,
+		Data:      []byte("payload"),
+	})
+
+	done := make(chan []byte, 1)
+	go func() {
+		buf := make([]byte, 4096)
+		n, _ := resp.Body.Read(buf)
+		done <- buf[:n]
+	}()
+
+	select {
+	case data := <-done:
+		body := string(data)
+		// Must contain a bare "id:\n" (empty value), not "id: something".
+		assert.Contains(t, body, "id:\n",
+			"server must emit bare 'id:\\n' line for empty IDPresent event; got: %q", body)
+	case <-time.After(2 * time.Second):
+		t.Fatal("timed out waiting for raw SSE bytes")
+	}
+}
+
+// --- sse-b11: SV-011 — retry: field contains only ASCII digits ---
+
+// TestServerRetryFieldIsAllDigits verifies that when the server serializes a
+// retry: field it emits only ASCII digits in the value.
+func TestServerRetryFieldIsAllDigits(t *testing.T) {
+	t.Parallel()
+
+	s := New()
+	defer s.Close()
+	s.AutoReplay = false
+
+	stream := s.CreateStream("retry-digits")
+
+	mux := http.NewServeMux()
+	mux.HandleFunc("/events", s.ServeHTTP)
+	srv := httptest.NewServer(mux)
+	defer srv.Close()
+
+	resp, err := http.Get(srv.URL + "/events?stream=retry-digits")
+	require.NoError(t, err)
+	defer resp.Body.Close()
+	require.Equal(t, http.StatusOK, resp.StatusCode)
+
+	// Wait for subscriber.
+	require.Eventually(t, func() bool {
+		return stream.getSubscriberCount() == 1
+	}, 2*time.Second, 10*time.Millisecond, "subscriber did not register in time")
+
+	s.Publish("retry-digits", &Event{
+		Data:  []byte("hello"),
+		Retry: []byte("3000"),
+	})
+
+	done := make(chan []byte, 1)
+	go func() {
+		buf := make([]byte, 4096)
+		n, _ := resp.Body.Read(buf)
+		done <- buf[:n]
+	}()
+
+	select {
+	case data := <-done:
+		body := string(data)
+		require.Contains(t, body, "retry:", "event must contain retry: field")
+
+		// Extract the retry: line value and verify it is all ASCII digits.
+		for _, line := range strings.Split(body, "\n") {
+			if strings.HasPrefix(line, "retry:") {
+				val := strings.TrimPrefix(line, "retry:")
+				val = strings.TrimSpace(val)
+				for _, ch := range val {
+					assert.True(t, ch >= '0' && ch <= '9',
+						"retry: field value must contain only ASCII digits; got char %q in %q", ch, val)
+				}
+				assert.NotEmpty(t, val, "retry: field value must not be empty")
+				return
+			}
+		}
+		t.Fatalf("retry: line not found in SSE output: %q", body)
+	case <-time.After(2 * time.Second):
+		t.Fatal("timed out waiting for raw SSE bytes")
 	}
 }
 
