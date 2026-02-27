@@ -1,0 +1,54 @@
+rules:
+  - id: no-panic-in-library
+    pattern: panic(...)
+    message: >
+      Libraries must not call panic(). Return an error to callers instead.
+    languages: [go]
+    severity: ERROR
+    paths:
+      exclude:
+        - "*_test.go"
+
+  - id: no-log-in-library
+    patterns:
+      - pattern: log.Print(...)
+      - pattern: log.Printf(...)
+      - pattern: log.Println(...)
+      - pattern: log.Fatal(...)
+      - pattern: log.Fatalf(...)
+      - pattern: log.Fatalln(...)
+      - pattern: log.Panic(...)
+      - pattern: log.Panicf(...)
+      - pattern: log.Panicln(...)
+    message: >
+      Libraries must not call log functions. Let the caller handle logging.
+    languages: [go]
+    severity: ERROR
+    paths:
+      exclude:
+        - "*_test.go"
+
+  - id: no-os-exit-in-library
+    pattern: os.Exit(...)
+    message: >
+      Libraries must not call os.Exit(). Return an error to callers instead.
+    languages: [go]
+    severity: ERROR
+    paths:
+      exclude:
+        - "*_test.go"
+
+  - id: errorf-wrap-with-w
+    patterns:
+      - pattern: fmt.Errorf($FMT, ..., $ERR)
+      - metavariable-regex:
+          metavariable: $ERR
+          regex: "^err$|^.*[Ee]rr$|^.*[Ee]rror$"
+      - metavariable-regex:
+          metavariable: $FMT
+          regex: ".*(%s|%v).*"
+    message: >
+      Use %w instead of %s or %v when wrapping an error with fmt.Errorf.
+      This preserves the error chain for errors.Is / errors.As.
+    languages: [go]
+    severity: ERROR

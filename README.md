@@ -10,6 +10,7 @@ r3labs authors for the foundational work.
 [![codecov](https://codecov.io/gh/joshuafuller/sse/graph/badge.svg)](https://codecov.io/gh/joshuafuller/sse)
 [![Go Reference](https://pkg.go.dev/badge/github.com/joshuafuller/sse/v3.svg)](https://pkg.go.dev/github.com/joshuafuller/sse/v3)
 [![License: MPL 2.0](https://img.shields.io/badge/License-MPL_2.0-brightgreen.svg)](https://opensource.org/licenses/MPL-2.0)
+[![Semgrep](https://github.com/joshuafuller/sse/actions/workflows/semgrep.yml/badge.svg)](https://github.com/joshuafuller/sse/actions/workflows/semgrep.yml)
 
 ## Changes from Upstream
 
