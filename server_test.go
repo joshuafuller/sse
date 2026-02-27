@@ -99,7 +99,8 @@ func TestServerExistingStreamPublish(t *testing.T) {
 
 	s.CreateStream("test")
 	stream := s.getStream("test")
-	sub := stream.addSubscriber(0, nil)
+	sub, ok := stream.addSubscriber(0, nil)
+	require.True(t, ok)
 
 	s.Publish("test", &Event{Data: []byte("test")})
 

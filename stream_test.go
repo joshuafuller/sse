@@ -26,7 +26,8 @@ func TestStreamAddSubscriber(t *testing.T) {
 	defer s.close()
 
 	s.event <- &Event{Data: []byte("test")}
-	sub := s.addSubscriber(0, nil)
+	sub, ok := s.addSubscriber(0, nil)
+	require.True(t, ok, "addSubscriber should succeed when MaxSubscribers is 0")
 
 	assert.Equal(t, 1, s.getSubscriberCount())
 
@@ -43,7 +44,8 @@ func TestStreamRemoveSubscriber(t *testing.T) {
 	s.run()
 	defer s.close()
 
-	sub := s.addSubscriber(0, nil)
+	sub, ok := s.addSubscriber(0, nil)
+	require.True(t, ok)
 	time.Sleep(time.Millisecond * 100)
 	s.deregister <- sub
 	time.Sleep(time.Millisecond * 100)
@@ -56,7 +58,8 @@ func TestStreamSubscriberClose(t *testing.T) {
 	s.run()
 	defer s.close()
 
-	sub := s.addSubscriber(0, nil)
+	sub, ok := s.addSubscriber(0, nil)
+	require.True(t, ok)
 	sub.close()
 	time.Sleep(time.Millisecond * 100)
 
@@ -71,7 +74,8 @@ func TestStreamDisableAutoReplay(t *testing.T) {
 	s.AutoReplay = false
 	s.event <- &Event{Data: []byte("test")}
 	time.Sleep(time.Millisecond * 100)
-	sub := s.addSubscriber(0, nil)
+	sub, ok := s.addSubscriber(0, nil)
+	require.True(t, ok)
 
 	assert.Equal(t, 0, len(sub.connection))
 }
@@ -81,8 +85,10 @@ func TestStreamSlowSubscriberDoesNotBlockOthers(t *testing.T) {
 	s.run()
 	defer s.close()
 
-	slowSub := s.addSubscriber(0, nil)
-	fastSub := s.addSubscriber(0, nil)
+	slowSub, ok1 := s.addSubscriber(0, nil)
+	require.True(t, ok1)
+	fastSub, ok2 := s.addSubscriber(0, nil)
+	require.True(t, ok2)
 
 	// Wait for both subscribers to be registered
 	time.Sleep(time.Millisecond * 100)
@@ -111,7 +117,9 @@ func TestStreamMultipleSubscribers(t *testing.T) {
 	s.run()
 
 	for i := 0; i < 10; i++ {
-		subs = append(subs, s.addSubscriber(0, nil))
+		sub, ok := s.addSubscriber(0, nil)
+		require.True(t, ok)
+		subs = append(subs, sub)
 	}
 
 	// Wait for all subscribers to be added
@@ -129,5 +137,26 @@ func TestStreamMultipleSubscribers(t *testing.T) {
 	// Wait for all subscribers to close
 	time.Sleep(time.Millisecond * 100)
 	assert.Equal(t, 0, s.getSubscriberCount())
+}
 
+// TestStreamMaxSubscribersRejected verifies sse-6rz at the stream level:
+// addSubscriber returns (nil, false) when MaxSubscribers is exceeded.
+func TestStreamMaxSubscribersRejected(t *testing.T) {
+	s := newStream("test", 1024, false, false, nil, nil)
+	s.MaxSubscribers = 2
+	s.run()
+	defer s.close()
+
+	sub1, ok1 := s.addSubscriber(0, nil)
+	require.True(t, ok1, "first subscriber should be accepted")
+	require.NotNil(t, sub1)
+
+	sub2, ok2 := s.addSubscriber(0, nil)
+	require.True(t, ok2, "second subscriber should be accepted (at cap)")
+	require.NotNil(t, sub2)
+
+	// Third subscriber should be rejected.
+	sub3, ok3 := s.addSubscriber(0, nil)
+	assert.False(t, ok3, "third subscriber must be rejected when at MaxSubscribers=2")
+	assert.Nil(t, sub3)
 }
