@@ -91,7 +91,7 @@ type Client struct {
 	mu                sync.Mutex
 	retryDelay        time.Duration
 	EncodingBase64    bool
-	Connected         bool
+	connected         atomic.Bool // protected by atomic; use Connected() / setConnected()
 }
 
 // NewClient creates a new client.
@@ -109,6 +109,12 @@ func NewClient(url string, opts ...func(c *Client)) *Client {
 	}
 
 	return c
+}
+
+// Connected reports whether the client is currently connected to the SSE
+// stream.  It is safe to call from any goroutine.
+func (c *Client) Connected() bool {
+	return c.connected.Load()
 }
 
 // Subscribe connects to a named SSE stream and calls handler for each event.
@@ -172,8 +178,7 @@ func (c *Client) SubscribeWithContext(ctx context.Context, stream string, handle
 			}
 		}
 
-		if !c.Connected && c.connectedcb != nil {
-			c.Connected = true
+		if c.connected.CompareAndSwap(false, true) && c.connectedcb != nil {
 			c.connectedcb(c)
 		}
 
@@ -252,8 +257,7 @@ func (c *Client) SubscribeChanWithContext(ctx context.Context, stream string, ch
 				}
 			}
 
-			if !c.Connected && c.connectedcb != nil {
-				c.Connected = true
+			if c.connected.CompareAndSwap(false, true) && c.connectedcb != nil {
 				c.connectedcb(c)
 			}
 
@@ -331,7 +335,7 @@ func (c *Client) readLoop(ctx context.Context, reader *EventStreamReader, outCh 
 			}
 			// run user specified disconnect function
 			if c.disconnectcb != nil {
-				c.Connected = false
+				c.connected.Store(false)
 				c.disconnectcb(c)
 			}
 			erChan <- err

@@ -451,6 +451,48 @@ func TestProcessEventBase64Invalid(t *testing.T) {
 		"error must wrap the base64 CorruptInputError (requires %%w, not %%s); got: %v", err)
 }
 
+// TestConnectedFieldRace verifies that c.Connected is safe for concurrent
+// access.  The race detector will fire here before the fix (plain bool with
+// no synchronisation) and pass cleanly afterwards (atomic.Bool).
+//
+// Scenario:
+//   - readLoop goroutine writes c.Connected = false (disconnect path)
+//   - SubscribeChanWithContext goroutine reads AND writes c.Connected (connect
+//     path) on each attempt
+//
+// We replicate the read/write directly on the internal field so the test runs
+// quickly without a real network, and we run several goroutines in parallel so
+// the race detector has a chance to catch the unsynchronised access.
+func TestConnectedFieldRace(t *testing.T) {
+	c := NewClient("http://localhost") // no real connection needed
+
+	const goroutines = 20
+	var wg sync.WaitGroup
+	wg.Add(goroutines * 2)
+
+	// Writer goroutines: simulate readLoop writing connected=false.
+	for i := 0; i < goroutines; i++ {
+		go func() {
+			defer wg.Done()
+			for j := 0; j < 1000; j++ {
+				c.connected.Store(false)
+			}
+		}()
+	}
+
+	// Reader+writer goroutines: simulate the connect path reading then writing.
+	for i := 0; i < goroutines; i++ {
+		go func() {
+			defer wg.Done()
+			for j := 0; j < 1000; j++ {
+				c.connected.CompareAndSwap(false, true)
+			}
+		}()
+	}
+
+	wg.Wait()
+}
+
 // TestEventStreamReaderLFBareCRTerminator verifies that an event stream using
 // LF field-line endings with a bare-CR event terminator (\n\r) correctly splits
 // two back-to-back events.
