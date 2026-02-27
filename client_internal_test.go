@@ -11,6 +11,8 @@ package sse
 import (
 	"bytes"
 	"context"
+	"encoding/base64"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -404,6 +406,49 @@ func TestEventStreamReaderCRLFBareCRTerminator(t *testing.T) {
 	require.NoError(t, err)
 	assert.Equal(t, []byte("second"), ev2.Data,
 		"second event Data must be 'second'; got %q (events must not be merged)", ev2.Data)
+}
+
+// TestTrimHeaderShortData verifies that trimHeader returns the slice unchanged
+// when len(data) < size (the early-return guard).
+func TestTrimHeaderShortData(t *testing.T) {
+	// headerData is "data: " — 6 bytes. Pass only 3 bytes; must be returned as-is.
+	short := []byte("dat")
+	got := trimHeader(len(headerData), short)
+	require.Equal(t, short, got, "trimHeader must return slice unchanged when len(data) < size")
+}
+
+// TestProcessEventBase64Valid verifies that processEvent with EncodingBase64=true
+// correctly base64-decodes the event data.
+func TestProcessEventBase64Valid(t *testing.T) {
+	// base64("hello") = "aGVsbG8="
+	raw := []byte("data: aGVsbG8=\n")
+	c := NewClient("http://localhost")
+	c.EncodingBase64 = true
+
+	event, err := c.processEvent(raw)
+	require.NoError(t, err)
+	assert.Equal(t, []byte("hello"), event.Data,
+		"processEvent with EncodingBase64=true must decode base64 data; got %q", event.Data)
+}
+
+// TestProcessEventBase64Invalid verifies that processEvent with EncodingBase64=true
+// returns an error that WRAPS the underlying decode error (i.e. errors.As works).
+// This test fails before the %s→%w fix in client.go.
+func TestProcessEventBase64Invalid(t *testing.T) {
+	// "!!!!" is not valid base64.
+	raw := []byte("data: !!!!\n")
+	c := NewClient("http://localhost")
+	c.EncodingBase64 = true
+
+	_, err := c.processEvent(raw)
+	require.Error(t, err, "processEvent must return an error for invalid base64")
+
+	// The error must WRAP the underlying base64 CorruptInputError so that
+	// errors.As can unwrap it. With %s the error is a string copy and
+	// errors.As returns false.
+	var corruptErr base64.CorruptInputError
+	assert.True(t, errors.As(err, &corruptErr),
+		"error must wrap the base64 CorruptInputError (requires %%w, not %%s); got: %v", err)
 }
 
 // TestEventStreamReaderLFBareCRTerminator verifies that an event stream using

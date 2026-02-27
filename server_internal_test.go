@@ -10,6 +10,7 @@
 package sse
 
 import (
+	"encoding/base64"
 	"errors"
 	"runtime"
 	"testing"
@@ -154,6 +155,39 @@ func TestServerCloseNoGoroutineLeak(t *testing.T) {
 	assert.LessOrEqual(t, got, baseline,
 		"goroutine count should return to baseline after Server.Close(); baseline=%d got=%d",
 		baseline, got)
+}
+
+// TestServerProcessEncodeBase64False verifies that server.process with
+// EncodeBase64=false (the default) returns the event data unchanged.
+func TestServerProcessEncodeBase64False(t *testing.T) {
+	s := New()
+	defer s.Close()
+
+	input := []byte("hello world")
+	event := &Event{Data: append([]byte(nil), input...)}
+	result := s.process(event)
+	assert.Equal(t, input, result.Data,
+		"process with EncodeBase64=false must leave data unchanged; got %q", result.Data)
+}
+
+// TestServerProcessEncodeBase64True verifies that server.process with
+// EncodeBase64=true returns the event data base64-encoded.
+func TestServerProcessEncodeBase64True(t *testing.T) {
+	s := New()
+	defer s.Close()
+	s.EncodeBase64 = true
+
+	input := []byte("hello world")
+	event := &Event{Data: append([]byte(nil), input...)}
+	result := s.process(event)
+
+	// Compute the expected base64 encoding.
+	expected := make([]byte, base64.StdEncoding.EncodedLen(len(input)))
+	base64.StdEncoding.Encode(expected, input)
+
+	assert.Equal(t, expected, result.Data,
+		"process with EncodeBase64=true must base64-encode data; got %q, want %q",
+		result.Data, expected)
 }
 
 // TestSubscriberDeregisterOnDisconnect verifies NF-008:
