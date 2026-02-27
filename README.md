@@ -33,6 +33,8 @@ All fixes are covered by regression tests and verified with the race detector.
 | **Client** | Scanner buffer overflow returns `bufio.ErrTooLong` instead of `io.EOF` | [#158](https://github.com/r3labs/sse/issues/158) |
 | **Client** | ID-only events (no `data:`) not dispatched to handler per WHATWG spec | [#163](https://github.com/r3labs/sse/issues/163) |
 | **Parser** | Leading UTF-8 BOM stripped from event stream before parsing | — |
+| **Client** | `id:` field value containing U+0000 NULL ignored; `LastEventID` unchanged | — |
+| **Testing** | `TestSubscribeWithContextDone` rewritten with event-driven sync; no more timing-based flakiness | [#186](https://github.com/r3labs/sse/issues/186) |
 
 ## Migrating from r3labs/sse
 

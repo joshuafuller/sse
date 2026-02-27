@@ -263,5 +263,5 @@ Current compliance status as of 2026-02-26. Status definitions:
 | NF-010 | External errors wrapped with context | NON-COMPLIANT | sse-71z |
 | NF-011 | Scanner overflow surfaced (not silent) | COMPLIANT | sse-2e2 (fixed) |
 | NF-012 | Public API has test coverage | PARTIAL | — |
-| NF-013 | Tests are deterministic | COMPLIANT | sse-zfc (fixed) |
+| NF-013 | Tests are deterministic | COMPLIANT | sse-zfc (fixed, event-driven sync) |
 | NF-014 | Tests in external package (`sse_test`) | NON-COMPLIANT | sse-4pn |
