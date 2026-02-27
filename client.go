@@ -474,6 +474,33 @@ func (c *Client) request(ctx context.Context, stream string) (*http.Response, er
 	return resp, nil
 }
 
+// splitLines splits SSE event bytes into individual field lines following the
+// WHATWG SSE §9.2.6 line-ending rules:
+//   - CR immediately followed by LF (\r\n) is a SINGLE line ending (not two).
+//   - Bare LF (\n) is a single line ending.
+//   - Bare CR (\r) is a single line ending.
+//
+// Unlike bytes.FieldsFunc (which collapses consecutive separator characters),
+// splitLines preserves empty lines and advances exactly the right number of bytes
+// per line ending, making the spec compliance explicit and unambiguous.
+func splitLines(data []byte) [][]byte {
+	var lines [][]byte
+	for len(data) > 0 {
+		idx := bytes.IndexAny(data, "\r\n")
+		if idx < 0 {
+			lines = append(lines, data)
+			break
+		}
+		lines = append(lines, data[:idx])
+		if data[idx] == '\r' && idx+1 < len(data) && data[idx+1] == '\n' {
+			data = data[idx+2:] // consume CRLF as one line ending
+		} else {
+			data = data[idx+1:] // consume bare CR or bare LF as one line ending
+		}
+	}
+	return lines
+}
+
 func (c *Client) processEvent(msg []byte) (event *Event, err error) {
 	var e Event
 
@@ -481,9 +508,10 @@ func (c *Client) processEvent(msg []byte) (event *Event, err error) {
 		return nil, errors.New("event message was empty")
 	}
 
-	// Normalize the crlf to lf to make it easier to split the lines.
-	// Split the line by "\n" or "\r", per the spec.
-	for _, line := range bytes.FieldsFunc(msg, func(r rune) bool { return r == '\n' || r == '\r' }) {
+	// Split the event block into individual field lines.
+	// splitLines treats \r\n as a SINGLE line ending per WHATWG SSE §9.2.6 (WP-004),
+	// unlike bytes.FieldsFunc which collapses consecutive \r and \n characters.
+	for _, line := range splitLines(msg) {
 		switch {
 		case bytes.HasPrefix(line, headerID):
 			val := trimHeader(len(headerID), line)

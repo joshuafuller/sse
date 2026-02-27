@@ -1726,6 +1726,81 @@ func TestEventStreamReaderCRLFSingleLineEnding(t *testing.T) {
 		"end-to-end CRLF: Event must be 'greet'; got %q", event.Event)
 }
 
+// TestEventStreamReaderCRLFBareCRTerminator verifies that an event stream using
+// CRLF field-line endings with a bare-CR event terminator (\r\n\r) correctly
+// splits two back-to-back events. The \r\n\r sequence (= CRLF line ending
+// followed by empty bare-CR line) must be recognised as a double-newline event
+// boundary so that the second event is NOT swallowed into the first.
+// Regression test for sse-frd WP-004 scanner gap.
+func TestEventStreamReaderCRLFBareCRTerminator(t *testing.T) {
+	// Two events in one stream:
+	//   Event 1: "data: first"  terminated by \r\n\r  (CRLF then bare CR = empty line)
+	//   Event 2: "data: second" terminated by \n\n    (standard LF double newline)
+	//
+	// Without the fix, containsDoubleNewline does not recognise \r\n\r, so the
+	// scanner lumps both events into a single atEOF token — the second event is lost.
+	full := "data: first\r\n\r" + "data: second\n\n"
+	reader := NewEventStreamReader(strings.NewReader(full), 4096)
+
+	// First event.
+	eventBytes1, err := reader.ReadEvent()
+	require.NoError(t, err, "first ReadEvent must succeed")
+	require.NotEmpty(t, eventBytes1, "first ReadEvent must return non-empty bytes")
+
+	c := NewClient("http://localhost")
+	ev1, err := c.processEvent(eventBytes1)
+	require.NoError(t, err)
+	assert.Equal(t, []byte("first"), ev1.Data,
+		"first event Data must be 'first'; got %q", ev1.Data)
+
+	// Second event — must be a separate event, NOT merged with the first.
+	eventBytes2, err := reader.ReadEvent()
+	require.NoError(t, err, "second ReadEvent must succeed")
+	require.NotEmpty(t, eventBytes2, "second ReadEvent must return non-empty bytes")
+
+	ev2, err := c.processEvent(eventBytes2)
+	require.NoError(t, err)
+	assert.Equal(t, []byte("second"), ev2.Data,
+		"second event Data must be 'second'; got %q (events must not be merged)", ev2.Data)
+}
+
+// TestEventStreamReaderLFBareCRTerminator verifies that an event stream using
+// LF field-line endings with a bare-CR event terminator (\n\r) correctly splits
+// two back-to-back events. The \n\r sequence (= LF line ending followed by
+// empty bare-CR line) must be recognised as a double-newline event boundary.
+// Regression test for sse-frd WP-004 scanner gap.
+func TestEventStreamReaderLFBareCRTerminator(t *testing.T) {
+	// Two events in one stream:
+	//   Event 1: "data: first"  terminated by \n\r  (LF then bare CR = empty line)
+	//   Event 2: "data: second" terminated by \n\n  (standard LF double newline)
+	//
+	// Without the fix, containsDoubleNewline does not recognise \n\r, so the
+	// scanner lumps both events into a single atEOF token.
+	full := "data: first\n\r" + "data: second\n\n"
+	reader := NewEventStreamReader(strings.NewReader(full), 4096)
+
+	// First event.
+	eventBytes1, err := reader.ReadEvent()
+	require.NoError(t, err, "first ReadEvent must succeed")
+	require.NotEmpty(t, eventBytes1, "first ReadEvent must return non-empty bytes")
+
+	c := NewClient("http://localhost")
+	ev1, err := c.processEvent(eventBytes1)
+	require.NoError(t, err)
+	assert.Equal(t, []byte("first"), ev1.Data,
+		"first event Data must be 'first'; got %q", ev1.Data)
+
+	// Second event — must be a separate event, NOT merged with the first.
+	eventBytes2, err := reader.ReadEvent()
+	require.NoError(t, err, "second ReadEvent must succeed")
+	require.NotEmpty(t, eventBytes2, "second ReadEvent must return non-empty bytes")
+
+	ev2, err := c.processEvent(eventBytes2)
+	require.NoError(t, err)
+	assert.Equal(t, []byte("second"), ev2.Data,
+		"second event Data must be 'second'; got %q (events must not be merged)", ev2.Data)
+}
+
 // --- sse-482: CL-004 — Sanitize Last-Event-ID header value ---
 
 // TestLastEventIDHeaderSanitized verifies that forbidden characters (NULL,

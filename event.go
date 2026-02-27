@@ -75,21 +75,44 @@ func NewEventStreamReader(eventStream io.Reader, maxBufferSize int) *EventStream
 // Returns a tuple containing the index of a double newline, and the number of bytes
 // represented by that sequence. If no double newline is present, the first value
 // will be negative.
+//
+// Per WHATWG SSE §9.2.6, a line ending is \r, \n, or \r\n (treated as one).
+// A double newline (empty line = event dispatch) therefore covers all pairings:
+//
+//	\r\r        (2) — bare CR + bare CR
+//	\n\n        (2) — LF + LF
+//	\n\r        (2) — LF + bare CR      [sse-frd: previously missing]
+//	\r\n\n      (3) — CRLF + LF
+//	\n\r\n      (3) — LF + CRLF
+//	\r\n\r      (3) — CRLF + bare CR    [sse-frd: previously missing]
+//	\r\n\r\n    (4) — CRLF + CRLF
 func containsDoubleNewline(data []byte) (int, int) {
-	// Search for each potentially valid sequence of newline characters
+	// Search for each potentially valid sequence of newline characters.
+	// Per WHATWG SSE §9.2.6, all pairings of the three line endings are valid
+	// event terminators. Longer patterns are searched first so that their
+	// positions can take precedence over shorter sub-pattern matches.
 	crcr := bytes.Index(data, []byte("\r\r"))
 	lflf := bytes.Index(data, []byte("\n\n"))
+	lfcr := bytes.Index(data, []byte("\n\r"))
 	crlflf := bytes.Index(data, []byte("\r\n\n"))
 	lfcrlf := bytes.Index(data, []byte("\n\r\n"))
+	crlfcr := bytes.Index(data, []byte("\r\n\r"))
 	crlfcrlf := bytes.Index(data, []byte("\r\n\r\n"))
-	// Find the earliest position of a double newline combination
-	minPos := minPosInt(crcr, minPosInt(lflf, minPosInt(crlflf, minPosInt(lfcrlf, crlfcrlf))))
-	// Detemine the length of the sequence
+
+	// Find the earliest position of a double newline combination.
+	minPos := minPosInt(crcr, minPosInt(lflf, minPosInt(lfcr, minPosInt(crlflf, minPosInt(lfcrlf, minPosInt(crlfcr, crlfcrlf))))))
+	if minPos < 0 {
+		return minPos, 2
+	}
+
+	// Determine the length of the terminator sequence.
+	// When a longer pattern and a shorter sub-pattern share the same start
+	// position, the longer pattern wins (e.g. \r\n\r\n beats \r\n\r).
 	nlen := 2
 	switch minPos {
 	case crlfcrlf:
 		nlen = 4
-	case crlflf, lfcrlf:
+	case crlflf, lfcrlf, crlfcr:
 		nlen = 3
 	}
 	return minPos, nlen
