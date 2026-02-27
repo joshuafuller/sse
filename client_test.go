@@ -2,10 +2,11 @@
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
 
-// Package sse — white-box test file (sse-4pn).
-// Cannot migrate to package sse_test because the tests access unexported
-// identifiers: trimHeader (func), headerData (var).
-package sse
+// Black-box tests for client.go — package sse_test.
+// TestTrimHeader (which needs the unexported trimHeader func and headerData
+// var) is kept in client_internal_test.go (package sse) per the testpackage
+// linter convention.
+package sse_test
 
 import (
 	"bufio"
@@ -19,13 +20,13 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"net/url"
-	"runtime"
 	"strings"
 	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
 
+	sse "github.com/joshuafuller/sse/v3"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
@@ -33,7 +34,7 @@ import (
 )
 
 var urlPath string
-var srv *Server
+var srv *sse.Server
 var server *httptest.Server
 
 var mldata = `{
@@ -63,8 +64,8 @@ func setupCount(empty bool, count int) {
 	go publishMsgs(srv, empty, count)
 }
 
-func newServer() *Server {
-	srv = New()
+func newServer() *sse.Server {
+	srv = sse.New()
 
 	mux := http.NewServeMux()
 	mux.HandleFunc("/events", srv.ServeHTTP)
@@ -76,8 +77,8 @@ func newServer() *Server {
 	return srv
 }
 
-func newServer401() *Server {
-	srv = New()
+func newServer401() *sse.Server {
+	srv = sse.New()
 
 	mux := http.NewServeMux()
 	mux.HandleFunc("/events", func(w http.ResponseWriter, r *http.Request) {
@@ -92,20 +93,20 @@ func newServer401() *Server {
 	return srv
 }
 
-func publishMsgs(s *Server, empty bool, count int) {
+func publishMsgs(s *sse.Server, empty bool, count int) {
 	for a := 0; a < count; a++ {
 		if empty {
-			s.Publish("test", &Event{Data: []byte("\n")})
+			s.Publish("test", &sse.Event{Data: []byte("\n")})
 		} else {
-			s.Publish("test", &Event{Data: []byte("ping")})
+			s.Publish("test", &sse.Event{Data: []byte("ping")})
 		}
 		time.Sleep(time.Millisecond * 50)
 	}
 }
 
-func publishMultilineMessages(s *Server, count int) {
+func publishMultilineMessages(s *sse.Server, count int) {
 	for a := 0; a < count; a++ {
-		s.Publish("test", &Event{ID: []byte("123456"), Data: []byte(mldata)})
+		s.Publish("test", &sse.Event{ID: []byte("123456"), Data: []byte(mldata)})
 	}
 }
 
@@ -119,12 +120,12 @@ func TestClientSubscribe(t *testing.T) {
 	setup(false)
 	defer cleanup()
 
-	c := NewClient(urlPath)
+	c := sse.NewClient(urlPath)
 
-	events := make(chan *Event)
+	events := make(chan *sse.Event)
 	var cErr error
 	go func() {
-		cErr = c.Subscribe("test", func(msg *Event) {
+		cErr = c.Subscribe("test", func(msg *sse.Event) {
 			if msg.Data != nil {
 				events <- msg
 				return
@@ -145,13 +146,13 @@ func TestClientSubscribeMultiline(t *testing.T) {
 	setupMultiline()
 	defer cleanup()
 
-	c := NewClient(urlPath)
+	c := sse.NewClient(urlPath)
 
-	events := make(chan *Event)
+	events := make(chan *sse.Event)
 	var cErr error
 
 	go func() {
-		cErr = c.Subscribe("test", func(msg *Event) {
+		cErr = c.Subscribe("test", func(msg *sse.Event) {
 			if msg.Data != nil {
 				events <- msg
 				return
@@ -175,9 +176,9 @@ func TestClientChanSubscribeEmptyMessage(t *testing.T) {
 	setup(true)
 	defer cleanup()
 
-	c := NewClient(urlPath)
+	c := sse.NewClient(urlPath)
 
-	events := make(chan *Event)
+	events := make(chan *sse.Event)
 	err := c.SubscribeChan("test", events)
 	require.Nil(t, err)
 
@@ -194,9 +195,9 @@ func TestClientChanSubscribe(t *testing.T) {
 	setup(false)
 	defer cleanup()
 
-	c := NewClient(urlPath)
+	c := sse.NewClient(urlPath)
 
-	events := make(chan *Event)
+	events := make(chan *sse.Event)
 	err := c.SubscribeChan("test", events)
 	require.Nil(t, err)
 
@@ -237,19 +238,19 @@ func TestClientOnDisconnect(t *testing.T) {
 	}))
 	defer tsrv.Close()
 
-	c := NewClient(tsrv.URL, ClientMaxBufferSize(smallBuf))
+	c := sse.NewClient(tsrv.URL, sse.ClientMaxBufferSize(smallBuf))
 	// Stop after one attempt so we don't loop forever.
 	c.ReconnectStrategy = backoff.WithMaxRetries(backoff.NewExponentialBackOff(), 0)
 
 	called := make(chan struct{}, 1)
-	c.OnDisconnect(func(client *Client) {
+	c.OnDisconnect(func(client *sse.Client) {
 		select {
 		case called <- struct{}{}:
 		default:
 		}
 	})
 
-	go c.SubscribeRaw(func(msg *Event) {})
+	go c.SubscribeRaw(func(msg *sse.Event) {})
 
 	select {
 	case <-called:
@@ -263,14 +264,14 @@ func TestClientOnConnect(t *testing.T) {
 	setup(false)
 	defer cleanup()
 
-	c := NewClient(urlPath)
+	c := sse.NewClient(urlPath)
 
 	called := make(chan struct{})
-	c.OnConnect(func(client *Client) {
+	c.OnConnect(func(client *sse.Client) {
 		called <- struct{}{}
 	})
 
-	go c.Subscribe("test", func(msg *Event) {})
+	go c.Subscribe("test", func(msg *sse.Event) {})
 
 	time.Sleep(time.Second)
 	assert.Equal(t, struct{}{}, <-called)
@@ -282,9 +283,9 @@ func TestClientChanReconnect(t *testing.T) {
 	setup(false)
 	defer cleanup()
 
-	c := NewClient(urlPath)
+	c := sse.NewClient(urlPath)
 
-	events := make(chan *Event)
+	events := make(chan *sse.Event)
 	err := c.SubscribeChan("test", events)
 	require.Nil(t, err)
 
@@ -308,9 +309,9 @@ func TestClientUnsubscribe(t *testing.T) {
 	setup(false)
 	defer cleanup()
 
-	c := NewClient(urlPath)
+	c := sse.NewClient(urlPath)
 
-	events := make(chan *Event)
+	events := make(chan *sse.Event)
 	err := c.SubscribeChan("test", events)
 	require.Nil(t, err)
 
@@ -325,9 +326,9 @@ func TestClientUnsubscribeNonBlock(t *testing.T) {
 	setupCount(false, count)
 	defer cleanup()
 
-	c := NewClient(urlPath)
+	c := sse.NewClient(urlPath)
 
-	events := make(chan *Event)
+	events := make(chan *sse.Event)
 	err := c.SubscribeChan("test", events)
 	require.Nil(t, err)
 
@@ -339,9 +340,9 @@ func TestClientUnsubscribeNonBlock(t *testing.T) {
 	}
 	// No more data is available to be read in the channel
 	// Make sure Unsubscribe returns quickly
-	doneCh := make(chan *Event)
+	doneCh := make(chan *sse.Event)
 	go func() {
-		var e Event
+		var e sse.Event
 		c.Unsubscribe(events)
 		doneCh <- &e
 	}()
@@ -353,7 +354,7 @@ func TestClientUnsubscribe401(t *testing.T) {
 	srv = newServer401()
 	defer cleanup()
 
-	c := NewClient(urlPath)
+	c := sse.NewClient(urlPath)
 
 	// limit retries to 3
 	c.ReconnectStrategy = backoff.WithMaxRetries(
@@ -361,7 +362,7 @@ func TestClientUnsubscribe401(t *testing.T) {
 		3,
 	)
 
-	err := c.SubscribeRaw(func(ev *Event) {
+	err := c.SubscribeRaw(func(ev *sse.Event) {
 		// this shouldn't run
 		assert.False(t, true)
 	})
@@ -378,8 +379,8 @@ func TestClient204NoReconnect(t *testing.T) {
 	}))
 	defer tsrv.Close()
 
-	c := NewClient(tsrv.URL)
-	err := c.SubscribeRaw(func(ev *Event) {})
+	c := sse.NewClient(tsrv.URL)
+	err := c.SubscribeRaw(func(ev *sse.Event) {})
 
 	require.Error(t, err)
 	assert.Equal(t, 1, requests, "client must not reconnect after 204")
@@ -389,7 +390,7 @@ func TestClientLargeData(t *testing.T) {
 	srv = newServer()
 	defer cleanup()
 
-	c := NewClient(urlPath, ClientMaxBufferSize(1<<19))
+	c := sse.NewClient(urlPath, sse.ClientMaxBufferSize(1<<19))
 
 	// limit retries to 3
 	c.ReconnectStrategy = backoff.WithMaxRetries(
@@ -402,12 +403,12 @@ func TestClientLargeData(t *testing.T) {
 	rand.Read(data)
 	data = []byte(hex.EncodeToString(data))
 
-	ec := make(chan *Event, 1)
+	ec := make(chan *sse.Event, 1)
 
-	srv.Publish("test", &Event{Data: data})
+	srv.Publish("test", &sse.Event{Data: data})
 
 	go func() {
-		c.Subscribe("test", func(ev *Event) {
+		c.Subscribe("test", func(ev *sse.Event) {
 			ec <- ev
 		})
 	}()
@@ -421,14 +422,14 @@ func TestClientComment(t *testing.T) {
 	srv = newServer()
 	defer cleanup()
 
-	c := NewClient(urlPath)
+	c := sse.NewClient(urlPath)
 
-	events := make(chan *Event)
+	events := make(chan *sse.Event)
 	err := c.SubscribeChan("test", events)
 	require.Nil(t, err)
 
-	srv.Publish("test", &Event{Comment: []byte("comment")})
-	srv.Publish("test", &Event{Data: []byte("test")})
+	srv.Publish("test", &sse.Event{Comment: []byte("comment")})
+	srv.Publish("test", &sse.Event{Data: []byte("test")})
 
 	ev, err := waitEvent(events, time.Second*1)
 	assert.Nil(t, err)
@@ -470,13 +471,13 @@ func TestSubscribeWithContextDone(t *testing.T) {
 	var done sync.WaitGroup
 	done.Add(numSubs)
 
-	c := NewClient(tsrv.URL)
+	c := sse.NewClient(tsrv.URL)
 
 	for i := 0; i < numSubs; i++ {
 		go func() {
 			defer done.Done()
 			once := sync.Once{}
-			c.SubscribeWithContext(ctx, "", func(msg *Event) {
+			c.SubscribeWithContext(ctx, "", func(msg *sse.Event) {
 				once.Do(func() { connected.Done() })
 			})
 		}()
@@ -506,15 +507,15 @@ func TestResponseBodyClosedOnValidatorError(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	client := NewClient(srv.URL)
+	client := sse.NewClient(srv.URL)
 	client.ReconnectStrategy = backoff.WithMaxRetries(backoff.NewExponentialBackOff(), 0)
-	client.ResponseValidator = func(c *Client, resp *http.Response) error {
+	client.ResponseValidator = func(c *sse.Client, resp *http.Response) error {
 		original := resp.Body
 		resp.Body = &bodyCloseTracker{ReadCloser: original, closed: closeCalled}
 		return fmt.Errorf("validator rejected response")
 	}
 
-	err := client.Subscribe("", func(msg *Event) {})
+	err := client.Subscribe("", func(msg *sse.Event) {})
 	assert.Error(t, err)
 
 	select {
@@ -550,11 +551,11 @@ func TestClientReconnectsAfterEOF(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel() // stop the subscription goroutine when the test ends
 
-	c := NewClient(srv.URL)
+	c := sse.NewClient(srv.URL)
 	c.ReconnectStrategy = backoff.WithMaxRetries(backoff.NewExponentialBackOff(), 5)
 
-	events := make(chan *Event, 10)
-	go c.SubscribeRawWithContext(ctx, func(msg *Event) {
+	events := make(chan *sse.Event, 10)
+	go c.SubscribeRawWithContext(ctx, func(msg *sse.Event) {
 		events <- msg
 	})
 
@@ -586,12 +587,12 @@ func TestClientUnsubscribeWhileBackingOff(t *testing.T) {
 	}))
 	defer tsrv.Close()
 
-	c := NewClient(tsrv.URL)
+	c := sse.NewClient(tsrv.URL)
 	// Long constant backoff so the goroutine is guaranteed to be sleeping
 	// when we call Unsubscribe.
 	c.ReconnectStrategy = backoff.NewConstantBackOff(10 * time.Second)
 
-	events := make(chan *Event)
+	events := make(chan *sse.Event)
 	err := c.SubscribeChan("", events)
 	require.Nil(t, err)
 
@@ -624,9 +625,9 @@ func TestClientDoubleUnsubscribeNoDeadlock(t *testing.T) {
 	setup(false)
 	defer cleanup()
 
-	c := NewClient(urlPath)
+	c := sse.NewClient(urlPath)
 
-	events := make(chan *Event)
+	events := make(chan *sse.Event)
 	err := c.SubscribeChan("test", events)
 	require.Nil(t, err)
 
@@ -673,15 +674,15 @@ func TestLastEventIDReset(t *testing.T) {
 	}))
 	defer tsrv.Close()
 
-	c := NewClient(tsrv.URL)
+	c := sse.NewClient(tsrv.URL)
 	c.ReconnectStrategy = backoff.WithMaxRetries(backoff.NewExponentialBackOff(), 0)
 
-	var received []*Event
+	var received []*sse.Event
 	var mu sync.Mutex
 	done := make(chan struct{})
 
 	go func() {
-		c.SubscribeRaw(func(msg *Event) {
+		c.SubscribeRaw(func(msg *sse.Event) {
 			mu.Lock()
 			received = append(received, msg)
 			if len(received) >= 2 {
@@ -718,15 +719,15 @@ func TestLastEventIDPersistsWhenAbsent(t *testing.T) {
 	}))
 	defer tsrv.Close()
 
-	c := NewClient(tsrv.URL)
+	c := sse.NewClient(tsrv.URL)
 	c.ReconnectStrategy = backoff.WithMaxRetries(backoff.NewExponentialBackOff(), 0)
 
-	var received []*Event
+	var received []*sse.Event
 	var mu sync.Mutex
 	done := make(chan struct{})
 
 	go func() {
-		c.SubscribeRaw(func(msg *Event) {
+		c.SubscribeRaw(func(msg *sse.Event) {
 			mu.Lock()
 			received = append(received, msg)
 			if len(received) >= 2 {
@@ -760,8 +761,8 @@ func TestSubscribeFailsOnWrongContentType(t *testing.T) {
 	}))
 	defer tsrv.Close()
 
-	c := NewClient(tsrv.URL)
-	err := c.SubscribeRaw(func(msg *Event) {})
+	c := sse.NewClient(tsrv.URL)
+	err := c.SubscribeRaw(func(msg *sse.Event) {})
 
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "content-type")
@@ -779,12 +780,12 @@ func TestSubscribeAcceptsContentTypeWithParams(t *testing.T) {
 	}))
 	defer tsrv.Close()
 
-	c := NewClient(tsrv.URL)
+	c := sse.NewClient(tsrv.URL)
 	c.ReconnectStrategy = backoff.WithMaxRetries(backoff.NewExponentialBackOff(), 0)
 
 	done := make(chan struct{})
 	go func() {
-		c.SubscribeRaw(func(msg *Event) {
+		c.SubscribeRaw(func(msg *sse.Event) {
 			close(done)
 		})
 	}()
@@ -826,14 +827,14 @@ func TestRetryFieldUpdatesReconnectDelay(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 
-	c := NewClient(tsrv.URL)
+	c := sse.NewClient(tsrv.URL)
 	// Do NOT set ReconnectStrategy — let the default be used with retry override.
 
 	var received int
 	done := make(chan struct{})
 
 	go func() {
-		c.SubscribeRawWithContext(ctx, func(msg *Event) {
+		c.SubscribeRawWithContext(ctx, func(msg *sse.Event) {
 			received++
 			if received >= 2 {
 				close(done)
@@ -855,92 +856,9 @@ func TestRetryFieldUpdatesReconnectDelay(t *testing.T) {
 		"reconnect delay should reflect retry: 200 field (got %v)", gap)
 }
 
-// TestRetryFieldIgnoresNonNumeric verifies that retry: with non-numeric value is ignored.
-func TestRetryFieldIgnoresNonNumeric(t *testing.T) {
-	tsrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		w.Header().Set("Content-Type", "text/event-stream")
-		w.WriteHeader(http.StatusOK)
-		fmt.Fprint(w, "retry: notanumber\ndata: hello\n\n")
-		w.(http.Flusher).Flush()
-	}))
-	defer tsrv.Close()
 
-	c := NewClient(tsrv.URL)
-	c.ReconnectStrategy = backoff.WithMaxRetries(backoff.NewExponentialBackOff(), 0)
 
-	done := make(chan struct{})
-	go func() {
-		c.SubscribeRaw(func(msg *Event) {
-			close(done)
-		})
-	}()
 
-	select {
-	case <-done:
-		// Event received successfully; non-numeric retry was ignored.
-	case <-time.After(3 * time.Second):
-		t.Fatal("timed out")
-	}
-
-	// retryDelay should be zero (non-numeric ignored).
-	c.mu.Lock()
-	assert.Equal(t, time.Duration(0), c.retryDelay, "non-numeric retry should be ignored")
-	c.mu.Unlock()
-}
-
-// TestReadLoopDoesNotLeakOnConsumerExit verifies that readLoop does not
-// block forever when the consumer exits without reading from erChan.
-// With an unbuffered erChan, the goroutine would block on send and leak.
-func TestReadLoopDoesNotLeakOnConsumerExit(t *testing.T) {
-	c := NewClient("http://localhost")
-
-	// A reader that immediately returns EOF.
-	errReader := io.NopCloser(strings.NewReader(""))
-	reader := NewEventStreamReader(errReader, 4096)
-
-	before := runtime.NumGoroutine()
-
-	// Use startReadLoop which creates the erChan internally.
-	// Do NOT read from erChan at all — simulate consumer exit.
-	c.startReadLoop(context.Background(), reader)
-
-	// Give the goroutine time to complete (if buffered) or block (if unbuffered).
-	time.Sleep(200 * time.Millisecond)
-	after := runtime.NumGoroutine()
-
-	// If erChan is buffered, the goroutine completes and we should see no growth.
-	// With unbuffered erChan, the goroutine is stuck and we see +1.
-	assert.LessOrEqual(t, after, before,
-		"readLoop goroutine should not leak when consumer does not read erChan")
-}
-
-// TestEventStreamReaderStripsLeadingBOM verifies that a leading UTF-8 BOM
-// (EF BB BF) is stripped before processing, per WHATWG SSE §9.2.6.
-func TestEventStreamReaderStripsLeadingBOM(t *testing.T) {
-	// BOM followed by a normal SSE event.
-	input := "\xEF\xBB\xBFdata: hello\n\n"
-	reader := NewEventStreamReader(strings.NewReader(input), 4096)
-	eventBytes, err := reader.ReadEvent()
-	require.NoError(t, err)
-
-	c := NewClient("http://localhost")
-	event, err := c.processEvent(eventBytes)
-	require.NoError(t, err)
-	assert.Equal(t, []byte("hello"), event.Data, "BOM should be stripped; data must parse cleanly")
-}
-
-// TestEventStreamReaderNoBOM verifies normal operation without a BOM.
-func TestEventStreamReaderNoBOM(t *testing.T) {
-	input := "data: world\n\n"
-	reader := NewEventStreamReader(strings.NewReader(input), 4096)
-	eventBytes, err := reader.ReadEvent()
-	require.NoError(t, err)
-
-	c := NewClient("http://localhost")
-	event, err := c.processEvent(eventBytes)
-	require.NoError(t, err)
-	assert.Equal(t, []byte("world"), event.Data)
-}
 
 // TestReadEventBufferOverflow verifies that when an SSE payload exceeds the
 // scanner buffer, ReadEvent returns bufio.ErrTooLong rather than io.EOF.
@@ -951,7 +869,7 @@ func TestReadEventBufferOverflow(t *testing.T) {
 	payload := bytes.Repeat([]byte("x"), 128)
 	payload = append(payload, []byte("\n\n")...)
 
-	reader := NewEventStreamReader(bytes.NewReader(payload), 64)
+	reader := sse.NewEventStreamReader(bytes.NewReader(payload), 64)
 	_, err := reader.ReadEvent()
 
 	require.Error(t, err)
@@ -967,11 +885,11 @@ func TestSubscribeWithContextCanceled(t *testing.T) {
 	defer cleanup()
 
 	ctx, cancel := context.WithCancel(context.Background())
-	c := NewClient(urlPath)
+	c := sse.NewClient(urlPath)
 
 	errCh := make(chan error, 1)
 	go func() {
-		errCh <- c.SubscribeWithContext(ctx, "test", func(msg *Event) {})
+		errCh <- c.SubscribeWithContext(ctx, "test", func(msg *sse.Event) {})
 	}()
 
 	// Let the subscription establish, then cancel.
@@ -1003,12 +921,12 @@ func TestIDFieldWithNullIgnored(t *testing.T) {
 	}))
 	defer tsrv.Close()
 
-	c := NewClient(tsrv.URL)
+	c := sse.NewClient(tsrv.URL)
 	c.ReconnectStrategy = backoff.WithMaxRetries(backoff.NewExponentialBackOff(), 0)
 
-	done := make(chan *Event, 1)
+	done := make(chan *sse.Event, 1)
 	go func() {
-		c.SubscribeRaw(func(msg *Event) {
+		c.SubscribeRaw(func(msg *sse.Event) {
 			done <- msg
 		})
 	}()
@@ -1039,10 +957,10 @@ func TestRequestErrorsAreWrapped(t *testing.T) {
 	t.Run("bad URL error message contains wrapper prefix", func(t *testing.T) {
 		// An invalid URL causes http.NewRequest to fail.
 		// After wrapping the message should start with "create request:".
-		c := NewClient("://bad-url")
+		c := sse.NewClient("://bad-url")
 		c.ReconnectStrategy = backoff.WithMaxRetries(backoff.NewExponentialBackOff(), 0)
 
-		err := c.SubscribeRaw(func(msg *Event) {})
+		err := c.SubscribeRaw(func(msg *sse.Event) {})
 		require.Error(t, err)
 		assert.Contains(t, err.Error(), "create request:",
 			"expected error to contain 'create request:' wrapper prefix, got: %v", err)
@@ -1051,10 +969,10 @@ func TestRequestErrorsAreWrapped(t *testing.T) {
 	t.Run("connection refused error message contains wrapper prefix", func(t *testing.T) {
 		// Port 1 is almost always refused; Connection.Do fails.
 		// After wrapping the message should start with "do request:".
-		c := NewClient("http://127.0.0.1:1/sse")
+		c := sse.NewClient("http://127.0.0.1:1/sse")
 		c.ReconnectStrategy = backoff.WithMaxRetries(backoff.NewExponentialBackOff(), 0)
 
-		err := c.SubscribeRaw(func(msg *Event) {})
+		err := c.SubscribeRaw(func(msg *sse.Event) {})
 		require.Error(t, err)
 		assert.Contains(t, err.Error(), "do request:",
 			"expected error to contain 'do request:' wrapper prefix, got: %v", err)
@@ -1062,11 +980,11 @@ func TestRequestErrorsAreWrapped(t *testing.T) {
 
 	t.Run("errors.As still works through wrapper", func(t *testing.T) {
 		// Wrapping with %w must not break errors.As traversal.
-		c := NewClient("://bad-url")
+		c := sse.NewClient("://bad-url")
 		c.ReconnectStrategy = backoff.WithMaxRetries(backoff.NewExponentialBackOff(), 0)
 
 		var urlErr *url.Error
-		err := c.SubscribeRaw(func(msg *Event) {})
+		err := c.SubscribeRaw(func(msg *sse.Event) {})
 		require.Error(t, err)
 		assert.True(t, errors.As(err, &urlErr),
 			"expected errors.As to find *url.Error in wrapped error chain, got: %T: %v", err, err)
@@ -1123,7 +1041,7 @@ func TestBackoffResetAfterSuccessfulConnection(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 
-	c := NewClient(tsrv.URL)
+	c := sse.NewClient(tsrv.URL)
 	// Small InitialInterval, huge Multiplier: without Reset() the 3rd attempt
 	// would be delayed by ~(10ms * 50) = 500ms; with Reset() it's ~10ms.
 	eb := backoff.NewExponentialBackOff()
@@ -1135,7 +1053,7 @@ func TestBackoffResetAfterSuccessfulConnection(t *testing.T) {
 
 	received := make(chan string, 10)
 	go func() {
-		c.SubscribeRawWithContext(ctx, func(msg *Event) {
+		c.SubscribeRawWithContext(ctx, func(msg *sse.Event) {
 			received <- string(msg.Data)
 		})
 	}()
@@ -1170,112 +1088,7 @@ func TestBackoffResetAfterSuccessfulConnection(t *testing.T) {
 
 // --- sse-a8c: context propagation into readLoop ---
 
-// slowReader is an io.ReadCloser that produces one SSE event per tick, pausing
-// between events. It simulates a long-lived stream that keeps sending events
-// so that readLoop keeps looping. On Close() it unblocks all pending reads.
-type slowReader struct {
-	events []string
-	idx    int
-	tick   time.Duration
-	mu     sync.Mutex
-	closed chan struct{}
-	buf    bytes.Buffer
-}
 
-func newSlowReader(events []string, tick time.Duration) *slowReader {
-	return &slowReader{events: events, tick: tick, closed: make(chan struct{})}
-}
-
-func (s *slowReader) Read(p []byte) (int, error) {
-	// If buffered data remains, serve it.
-	s.mu.Lock()
-	if s.buf.Len() > 0 {
-		n, err := s.buf.Read(p)
-		s.mu.Unlock()
-		return n, err
-	}
-	s.mu.Unlock()
-
-	// Wait tick or close.
-	select {
-	case <-s.closed:
-		return 0, io.EOF
-	case <-time.After(s.tick):
-	}
-
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	if s.idx < len(s.events) {
-		s.buf.WriteString(s.events[s.idx])
-		s.idx++
-	} else {
-		// No more events; block indefinitely (simulates idle stream).
-		s.mu.Unlock()
-		<-s.closed
-		s.mu.Lock()
-		return 0, io.EOF
-	}
-	return s.buf.Read(p)
-}
-
-func (s *slowReader) Close() error {
-	select {
-	case <-s.closed:
-	default:
-		close(s.closed)
-	}
-	return nil
-}
-
-// TestReadLoopExitsOnContextCancel verifies that after context cancellation the
-// readLoop goroutine sends context.Canceled to erChan and exits. The goroutine
-// is checked via the post-event ctx.Done() select that runs after each
-// successfully dispatched event.
-func TestReadLoopExitsOnContextCancel(t *testing.T) {
-	c := NewClient("http://localhost")
-	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
-
-	// Events stream: two events then the reader blocks forever.
-	// We cancel the context after the first event arrives so that
-	// readLoop exits via the post-event ctx.Done() check.
-	sr := newSlowReader([]string{
-		"data: first\n\n",
-		"data: second\n\n",
-	}, 20*time.Millisecond)
-	defer sr.Close()
-
-	reader := NewEventStreamReader(sr, 4096)
-	outCh, erChan := c.startReadLoop(ctx, reader)
-
-	// Wait for readLoop to have an event ready to send (it blocks on outCh <- msg
-	// until we receive). Cancel the context BEFORE receiving so that by the time
-	// outCh unblocks readLoop, the post-event ctx.Done() check fires.
-	//
-	// Give the reader time to produce the first event.
-	time.Sleep(100 * time.Millisecond)
-
-	// Cancel the context while readLoop is blocked sending the first event.
-	cancel()
-
-	// Now receive the event — this unblocks readLoop's outCh send.
-	select {
-	case <-outCh:
-		// first event received
-	case <-time.After(2 * time.Second):
-		t.Fatal("timed out waiting for first event")
-	}
-
-	// readLoop should detect ctx.Done() in the post-event check and send
-	// context.Canceled to erChan promptly.
-	select {
-	case err := <-erChan:
-		assert.ErrorIs(t, err, context.Canceled,
-			"expected context.Canceled from readLoop on ctx cancel, got: %v", err)
-	case <-time.After(500 * time.Millisecond):
-		t.Fatal("readLoop did not exit within 500ms of context cancellation")
-	}
-}
 
 // TestEmptyDataWithIDNotDispatched verifies that an event containing only an
 // id: field (no data:) is NOT dispatched to the handler, per WHATWG spec.
@@ -1295,15 +1108,15 @@ func TestEmptyDataWithIDNotDispatched(t *testing.T) {
 	}))
 	defer tsrv.Close()
 
-	c := NewClient(tsrv.URL)
+	c := sse.NewClient(tsrv.URL)
 	c.ReconnectStrategy = backoff.WithMaxRetries(backoff.NewExponentialBackOff(), 0)
 
-	var received []*Event
+	var received []*sse.Event
 	var mu sync.Mutex
 	done := make(chan struct{})
 
 	go func() {
-		c.SubscribeRaw(func(msg *Event) {
+		c.SubscribeRaw(func(msg *sse.Event) {
 			mu.Lock()
 			received = append(received, msg)
 			mu.Unlock()
@@ -1331,10 +1144,10 @@ func TestEmptyDataWithIDNotDispatched(t *testing.T) {
 	assert.Equal(t, []byte("42"), lastID, "LastEventID should be set even though event was not dispatched")
 }
 
-// --- sse-gky: StreamError type wraps non-200 status codes ---
+// --- sse-gky: sse.StreamError type wraps non-200 status codes ---
 
 // TestStreamErrorWrapsNon200 verifies that when the server returns a non-200
-// status, the error is wrapped as a *StreamError so callers can use errors.As.
+// status, the error is wrapped as a *sse.StreamError so callers can use errors.As.
 func TestStreamErrorWrapsNon200(t *testing.T) {
 	tsrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusServiceUnavailable)
@@ -1342,21 +1155,21 @@ func TestStreamErrorWrapsNon200(t *testing.T) {
 	}))
 	defer tsrv.Close()
 
-	c := NewClient(tsrv.URL)
+	c := sse.NewClient(tsrv.URL)
 	// Stop after one attempt so the test finishes quickly.
 	c.ReconnectStrategy = backoff.WithMaxRetries(backoff.NewExponentialBackOff(), 0)
 
-	err := c.SubscribeRaw(func(ev *Event) {})
+	err := c.SubscribeRaw(func(ev *sse.Event) {})
 	require.Error(t, err)
 
-	var se *StreamError
-	require.True(t, errors.As(err, &se), "expected *StreamError in error chain, got: %T: %v", err, err)
+	var se *sse.StreamError
+	require.True(t, errors.As(err, &se), "expected *sse.StreamError in error chain, got: %T: %v", err, err)
 	assert.Equal(t, http.StatusServiceUnavailable, se.StatusCode)
 	assert.Contains(t, string(se.Body), "service unavailable")
 	assert.Contains(t, err.Error(), "could not connect to stream")
 }
 
-// TestStreamErrorBodyCappedAt512 verifies that StreamError.Body captures at
+// TestStreamErrorBodyCappedAt512 verifies that sse.StreamError.Body captures at
 // most 512 bytes of the response body.
 func TestStreamErrorBodyCappedAt512(t *testing.T) {
 	bigBody := bytes.Repeat([]byte("x"), 1024)
@@ -1366,19 +1179,19 @@ func TestStreamErrorBodyCappedAt512(t *testing.T) {
 	}))
 	defer tsrv.Close()
 
-	c := NewClient(tsrv.URL)
+	c := sse.NewClient(tsrv.URL)
 	c.ReconnectStrategy = backoff.WithMaxRetries(backoff.NewExponentialBackOff(), 0)
 
-	err := c.SubscribeRaw(func(ev *Event) {})
+	err := c.SubscribeRaw(func(ev *sse.Event) {})
 	require.Error(t, err)
 
-	var se *StreamError
+	var se *sse.StreamError
 	require.True(t, errors.As(err, &se))
-	assert.LessOrEqual(t, len(se.Body), 512, "StreamError.Body must be capped at 512 bytes")
+	assert.LessOrEqual(t, len(se.Body), 512, "sse.StreamError.Body must be capped at 512 bytes")
 }
 
 // TestStreamErrorViaChanSubscribe verifies that SubscribeChanWithContext also
-// returns a *StreamError-wrapped error on non-200.
+// returns a *sse.StreamError-wrapped error on non-200.
 func TestStreamErrorViaChanSubscribe(t *testing.T) {
 	tsrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusForbidden)
@@ -1386,15 +1199,15 @@ func TestStreamErrorViaChanSubscribe(t *testing.T) {
 	}))
 	defer tsrv.Close()
 
-	c := NewClient(tsrv.URL)
+	c := sse.NewClient(tsrv.URL)
 	c.ReconnectStrategy = backoff.WithMaxRetries(backoff.NewExponentialBackOff(), 0)
 
-	ch := make(chan *Event)
+	ch := make(chan *sse.Event)
 	err := c.SubscribeChan("", ch)
 	require.Error(t, err)
 
-	var se *StreamError
-	require.True(t, errors.As(err, &se), "expected *StreamError, got: %T: %v", err, err)
+	var se *sse.StreamError
+	require.True(t, errors.As(err, &se), "expected *sse.StreamError, got: %T: %v", err, err)
 	assert.Equal(t, http.StatusForbidden, se.StatusCode)
 }
 
@@ -1417,16 +1230,16 @@ func TestOnConnectFiresWithoutEvents(t *testing.T) {
 
 	ctx, cancel := context.WithCancel(context.Background())
 
-	c := NewClient(tsrv.URL)
+	c := sse.NewClient(tsrv.URL)
 	connected := make(chan struct{}, 1)
-	c.OnConnect(func(cl *Client) {
+	c.OnConnect(func(cl *sse.Client) {
 		select {
 		case connected <- struct{}{}:
 		default:
 		}
 	})
 
-	go c.SubscribeRawWithContext(ctx, func(msg *Event) {})
+	go c.SubscribeRawWithContext(ctx, func(msg *sse.Event) {})
 
 	// OnConnect must fire within 500ms even though the server sends no events.
 	select {
@@ -1458,7 +1271,7 @@ func TestOnConnectFiresBeforeFirstEvent(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
-	c := NewClient(tsrv.URL)
+	c := sse.NewClient(tsrv.URL)
 
 	var order []string
 	var orderMu sync.Mutex
@@ -1469,11 +1282,11 @@ func TestOnConnectFiresBeforeFirstEvent(t *testing.T) {
 	}
 
 	eventReceived := make(chan struct{}, 1)
-	c.OnConnect(func(cl *Client) {
+	c.OnConnect(func(cl *sse.Client) {
 		addOrder("connect")
 	})
 
-	go c.SubscribeRawWithContext(ctx, func(msg *Event) {
+	go c.SubscribeRawWithContext(ctx, func(msg *sse.Event) {
 		addOrder("event")
 		select {
 		case eventReceived <- struct{}{}:
@@ -1498,43 +1311,6 @@ func TestOnConnectFiresBeforeFirstEvent(t *testing.T) {
 
 // --- sse-fyk: io.ErrUnexpectedEOF treated like io.EOF (silent reconnect) ---
 
-// TestUnexpectedEOFDoesNotFireDisconnect verifies that when readLoop receives
-// io.ErrUnexpectedEOF the disconnect callback is NOT called, but the error IS
-// forwarded to erChan so that backoff can trigger a reconnect.
-func TestUnexpectedEOFDoesNotFireDisconnect(t *testing.T) {
-	c := NewClient("http://localhost")
-
-	disconnectCalled := make(chan struct{}, 1)
-	c.OnDisconnect(func(cl *Client) {
-		select {
-		case disconnectCalled <- struct{}{}:
-		default:
-		}
-	})
-
-	// A reader that immediately returns io.ErrUnexpectedEOF.
-	pr, pw := io.Pipe()
-	_ = pw.CloseWithError(io.ErrUnexpectedEOF)
-
-	reader := NewEventStreamReader(pr, 4096)
-	_, erChan := c.startReadLoop(context.Background(), reader)
-
-	// erChan must receive the error (reconnect path).
-	select {
-	case err := <-erChan:
-		assert.Equal(t, io.ErrUnexpectedEOF, err, "erChan must receive io.ErrUnexpectedEOF")
-	case <-time.After(time.Second):
-		t.Fatal("timed out waiting for erChan to receive io.ErrUnexpectedEOF")
-	}
-
-	// disconnectcb must NOT have been called.
-	select {
-	case <-disconnectCalled:
-		t.Fatal("disconnectcb must not be called for io.ErrUnexpectedEOF")
-	case <-time.After(50 * time.Millisecond):
-		// good
-	}
-}
 
 // --- sse-x43: non-GET methods and request body ---
 
@@ -1551,13 +1327,13 @@ func TestClientDefaultMethodIsGET(t *testing.T) {
 	}))
 	defer tsrv.Close()
 
-	c := NewClient(tsrv.URL)
+	c := sse.NewClient(tsrv.URL)
 	// Use a strategy that stops immediately after the first attempt.
 	b := backoff.NewExponentialBackOff()
 	b.MaxElapsedTime = 100 * time.Millisecond
 	c.ReconnectStrategy = b
 
-	_ = c.SubscribeRaw(func(msg *Event) {})
+	_ = c.SubscribeRaw(func(msg *sse.Event) {})
 
 	assert.Equal(t, http.MethodGet, gotMethod, "default method must be GET")
 }
@@ -1578,7 +1354,7 @@ func TestClientPOSTWithBody(t *testing.T) {
 	defer tsrv.Close()
 
 	const payload = `{"stream":"test"}`
-	c := NewClient(tsrv.URL)
+	c := sse.NewClient(tsrv.URL)
 	c.Method = http.MethodPost
 	c.Body = func() io.Reader { return strings.NewReader(payload) }
 
@@ -1586,7 +1362,7 @@ func TestClientPOSTWithBody(t *testing.T) {
 	b.MaxElapsedTime = 100 * time.Millisecond
 	c.ReconnectStrategy = b
 
-	_ = c.SubscribeRaw(func(msg *Event) {})
+	_ = c.SubscribeRaw(func(msg *sse.Event) {})
 
 	assert.Equal(t, http.MethodPost, gotMethod, "method must be POST")
 	assert.Equal(t, payload, gotBody, "request body must match payload")
@@ -1594,187 +1370,13 @@ func TestClientPOSTWithBody(t *testing.T) {
 
 // --- sse-frd: WP-004 — CRLF as single line ending ---
 
-// TestProcessEventCRLF verifies that CRLF (\r\n) is treated as a SINGLE line
-// ending per WHATWG SSE §9.2.6. The bug: bytes.FieldsFunc splits on \r and \n
-// independently, so \r\n produces an empty token between them that may corrupt
-// field parsing or produce ghost empty lines.
-func TestProcessEventCRLF(t *testing.T) {
-	c := NewClient("http://localhost")
 
-	// "data: hello\r\n" is a single field line terminated by CRLF.
-	// The event block itself uses \r\n\r\n as the double-newline terminator.
-	// containsDoubleNewline returns the bytes up to (but not including) the
-	// double newline, so processEvent receives "data: hello\r\n" (with trailing
-	// \r\n still present from the first line boundary inside the block).
-	// With the bug, FieldsFunc("\r\n") produces ["data: hello", ""] — two tokens.
-	// With the fix, splitLines produces ["data: hello"] — one token.
-	raw := []byte("data: hello\r\n")
-	event, err := c.processEvent(raw)
-	require.NoError(t, err)
-	assert.Equal(t, []byte("hello"), event.Data,
-		"CRLF line ending must be treated as single line ending; got Data=%q", event.Data)
-}
 
-// TestProcessEventBareCR verifies that a bare \r is treated as a single line
-// ending, per WHATWG SSE §9.2.6.
-func TestProcessEventBareCR(t *testing.T) {
-	c := NewClient("http://localhost")
 
-	// "data: hello\r" — bare CR terminates the field line.
-	raw := []byte("data: hello\r")
-	event, err := c.processEvent(raw)
-	require.NoError(t, err)
-	assert.Equal(t, []byte("hello"), event.Data,
-		"bare CR must be treated as a single line ending; got Data=%q", event.Data)
-}
 
-// TestProcessEventMixedLineEndings verifies that a single event block
-// containing both CRLF and LF-terminated field lines parses all fields
-// correctly. Mixed line endings appear in the wild.
-func TestProcessEventMixedLineEndings(t *testing.T) {
-	c := NewClient("http://localhost")
 
-	// Two fields: event type on CRLF, data on LF.
-	// processEvent receives the raw bytes without the trailing double-newline.
-	raw := []byte("event: foo\r\ndata: bar\n")
-	event, err := c.processEvent(raw)
-	require.NoError(t, err)
-	assert.Equal(t, []byte("foo"), event.Event,
-		"event field must parse from CRLF-terminated line; got Event=%q", event.Event)
-	assert.Equal(t, []byte("bar"), event.Data,
-		"data field must parse from LF-terminated line; got Data=%q", event.Data)
-}
 
-// TestProcessEventCRLFMultipleDataLines verifies that multiple data: fields
-// separated by CRLF are concatenated correctly (with \n between them) per spec.
-func TestProcessEventCRLFMultipleDataLines(t *testing.T) {
-	c := NewClient("http://localhost")
 
-	// Two data lines with CRLF — must concatenate to "line1\nline2".
-	raw := []byte("data: line1\r\ndata: line2\r\n")
-	event, err := c.processEvent(raw)
-	require.NoError(t, err)
-	assert.Equal(t, []byte("line1\nline2"), event.Data,
-		"multiple CRLF-separated data: lines must concatenate with \\n; got Data=%q", event.Data)
-}
-
-// TestProcessEventCRLFDoesNotProduceSpuriousEmptyFields ensures that a
-// CRLF sequence does NOT produce an empty intermediate token that would be
-// misidentified as a bare "data" line (triggering an empty data append).
-func TestProcessEventCRLFDoesNotProduceSpuriousEmptyFields(t *testing.T) {
-	c := NewClient("http://localhost")
-
-	// With the bug: FieldsFunc on "data: x\r\nevent: y\r\n" yields tokens
-	// ["data: x", "", "event: y", ""] — the empty strings fall through to
-	// the default case and are ignored, but if "data" (without colon) were
-	// matched it would append an extra \n to Data.
-	raw := []byte("data: x\r\nevent: y\r\n")
-	event, err := c.processEvent(raw)
-	require.NoError(t, err)
-	// Data must be exactly "x" — no extra \n from a phantom empty line.
-	assert.Equal(t, []byte("x"), event.Data,
-		"CRLF must not produce empty intermediate tokens; got Data=%q", event.Data)
-	assert.Equal(t, []byte("y"), event.Event,
-		"event field must parse correctly; got Event=%q", event.Event)
-}
-
-// TestEventStreamReaderCRLFSingleLineEnding verifies the end-to-end path:
-// EventStreamReader correctly delivers an event whose fields are CRLF-terminated,
-// and processEvent then parses it cleanly into the correct field values.
-func TestEventStreamReaderCRLFSingleLineEnding(t *testing.T) {
-	// Full SSE event block with CRLF line endings and CRLF+CRLF terminator.
-	// containsDoubleNewline recognises \r\n\r\n (length 4), so the scanner
-	// returns the bytes up to (not including) the \r\n\r\n terminator.
-	input := "data: hello\r\nevent: greet\r\n"
-	// Wrap in \r\n\r\n to form a complete event block as the stream reader sees it.
-	full := input + "\r\n"
-	reader := NewEventStreamReader(strings.NewReader(full), 4096)
-	eventBytes, err := reader.ReadEvent()
-	require.NoError(t, err)
-
-	c := NewClient("http://localhost")
-	event, err := c.processEvent(eventBytes)
-	require.NoError(t, err)
-	assert.Equal(t, []byte("hello"), event.Data,
-		"end-to-end CRLF: Data must be 'hello'; got %q", event.Data)
-	assert.Equal(t, []byte("greet"), event.Event,
-		"end-to-end CRLF: Event must be 'greet'; got %q", event.Event)
-}
-
-// TestEventStreamReaderCRLFBareCRTerminator verifies that an event stream using
-// CRLF field-line endings with a bare-CR event terminator (\r\n\r) correctly
-// splits two back-to-back events. The \r\n\r sequence (= CRLF line ending
-// followed by empty bare-CR line) must be recognised as a double-newline event
-// boundary so that the second event is NOT swallowed into the first.
-// Regression test for sse-frd WP-004 scanner gap.
-func TestEventStreamReaderCRLFBareCRTerminator(t *testing.T) {
-	// Two events in one stream:
-	//   Event 1: "data: first"  terminated by \r\n\r  (CRLF then bare CR = empty line)
-	//   Event 2: "data: second" terminated by \n\n    (standard LF double newline)
-	//
-	// Without the fix, containsDoubleNewline does not recognise \r\n\r, so the
-	// scanner lumps both events into a single atEOF token — the second event is lost.
-	full := "data: first\r\n\r" + "data: second\n\n"
-	reader := NewEventStreamReader(strings.NewReader(full), 4096)
-
-	// First event.
-	eventBytes1, err := reader.ReadEvent()
-	require.NoError(t, err, "first ReadEvent must succeed")
-	require.NotEmpty(t, eventBytes1, "first ReadEvent must return non-empty bytes")
-
-	c := NewClient("http://localhost")
-	ev1, err := c.processEvent(eventBytes1)
-	require.NoError(t, err)
-	assert.Equal(t, []byte("first"), ev1.Data,
-		"first event Data must be 'first'; got %q", ev1.Data)
-
-	// Second event — must be a separate event, NOT merged with the first.
-	eventBytes2, err := reader.ReadEvent()
-	require.NoError(t, err, "second ReadEvent must succeed")
-	require.NotEmpty(t, eventBytes2, "second ReadEvent must return non-empty bytes")
-
-	ev2, err := c.processEvent(eventBytes2)
-	require.NoError(t, err)
-	assert.Equal(t, []byte("second"), ev2.Data,
-		"second event Data must be 'second'; got %q (events must not be merged)", ev2.Data)
-}
-
-// TestEventStreamReaderLFBareCRTerminator verifies that an event stream using
-// LF field-line endings with a bare-CR event terminator (\n\r) correctly splits
-// two back-to-back events. The \n\r sequence (= LF line ending followed by
-// empty bare-CR line) must be recognised as a double-newline event boundary.
-// Regression test for sse-frd WP-004 scanner gap.
-func TestEventStreamReaderLFBareCRTerminator(t *testing.T) {
-	// Two events in one stream:
-	//   Event 1: "data: first"  terminated by \n\r  (LF then bare CR = empty line)
-	//   Event 2: "data: second" terminated by \n\n  (standard LF double newline)
-	//
-	// Without the fix, containsDoubleNewline does not recognise \n\r, so the
-	// scanner lumps both events into a single atEOF token.
-	full := "data: first\n\r" + "data: second\n\n"
-	reader := NewEventStreamReader(strings.NewReader(full), 4096)
-
-	// First event.
-	eventBytes1, err := reader.ReadEvent()
-	require.NoError(t, err, "first ReadEvent must succeed")
-	require.NotEmpty(t, eventBytes1, "first ReadEvent must return non-empty bytes")
-
-	c := NewClient("http://localhost")
-	ev1, err := c.processEvent(eventBytes1)
-	require.NoError(t, err)
-	assert.Equal(t, []byte("first"), ev1.Data,
-		"first event Data must be 'first'; got %q", ev1.Data)
-
-	// Second event — must be a separate event, NOT merged with the first.
-	eventBytes2, err := reader.ReadEvent()
-	require.NoError(t, err, "second ReadEvent must succeed")
-	require.NotEmpty(t, eventBytes2, "second ReadEvent must return non-empty bytes")
-
-	ev2, err := c.processEvent(eventBytes2)
-	require.NoError(t, err)
-	assert.Equal(t, []byte("second"), ev2.Data,
-		"second event Data must be 'second'; got %q (events must not be merged)", ev2.Data)
-}
 
 // --- sse-482: CL-004 — Sanitize Last-Event-ID header value ---
 
@@ -1795,7 +1397,7 @@ func TestLastEventIDHeaderSanitized(t *testing.T) {
 	}))
 	defer tsrv.Close()
 
-	c := NewClient(tsrv.URL)
+	c := sse.NewClient(tsrv.URL)
 	c.ReconnectStrategy = backoff.WithMaxRetries(backoff.NewExponentialBackOff(), 0)
 
 	// Store a LastEventID that contains all three forbidden characters.
@@ -1804,7 +1406,7 @@ func TestLastEventIDHeaderSanitized(t *testing.T) {
 
 	done := make(chan struct{})
 	go func() {
-		c.SubscribeRaw(func(msg *Event) {
+		c.SubscribeRaw(func(msg *sse.Event) {
 			close(done)
 		})
 	}()
@@ -1840,7 +1442,7 @@ func TestLastEventIDHeaderOmittedWhenAllForbidden(t *testing.T) {
 	}))
 	defer tsrv.Close()
 
-	c := NewClient(tsrv.URL)
+	c := sse.NewClient(tsrv.URL)
 	c.ReconnectStrategy = backoff.WithMaxRetries(backoff.NewExponentialBackOff(), 0)
 
 	// All characters are forbidden — the sanitized value will be empty, so the
@@ -1849,7 +1451,7 @@ func TestLastEventIDHeaderOmittedWhenAllForbidden(t *testing.T) {
 
 	done := make(chan struct{})
 	go func() {
-		c.SubscribeRaw(func(msg *Event) {
+		c.SubscribeRaw(func(msg *sse.Event) {
 			close(done)
 		})
 	}()
@@ -1897,7 +1499,7 @@ func TestClientBodyFactoryCalledOnReconnect(t *testing.T) {
 	}))
 	defer tsrv.Close()
 
-	c := NewClient(tsrv.URL)
+	c := sse.NewClient(tsrv.URL)
 	c.Method = http.MethodPost
 	c.Body = func() io.Reader {
 		atomic.AddInt32(&callCount, 1)
@@ -1911,7 +1513,7 @@ func TestClientBodyFactoryCalledOnReconnect(t *testing.T) {
 	b.MaxElapsedTime = 5 * time.Second
 	c.ReconnectStrategy = b
 
-	_ = c.SubscribeRaw(func(msg *Event) {
+	_ = c.SubscribeRaw(func(msg *sse.Event) {
 		eventOnce.Do(func() { close(eventReceived) })
 	})
 

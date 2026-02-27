@@ -153,6 +153,12 @@ func (s *Server) getStream(id string) *Stream {
 	return s.streams[id]
 }
 
+// GetStream returns the stream with the given id, or nil if it does not exist.
+// It is safe to call concurrently.
+func (s *Server) GetStream(id string) *Stream {
+	return s.getStream(id)
+}
+
 func (s *Server) process(event *Event) *Event {
 	if s.EncodeBase64 {
 		output := make([]byte, base64.StdEncoding.EncodedLen(len(event.Data)))

@@ -2,11 +2,10 @@
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
 
-// Package sse — white-box test file (sse-4pn).
-// Cannot migrate to package sse_test because the tests access unexported
-// identifiers: newStream (func), Stream.addSubscriber (method),
-// Stream.deregister (field), Subscriber.connection (field),
-// Stream.getSubscriberCount (method).
+// White-box tests for stream.go that require access to unexported symbols
+// (newStream, addSubscriber, deregister, Subscriber.connection,
+// getSubscriberCount). Named *_internal_test.go per the testpackage linter
+// convention so they are allowed to stay in package sse.
 package sse
 
 import (

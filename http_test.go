@@ -2,15 +2,14 @@
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
 
-// Package sse — white-box test file (sse-4pn).
-// Cannot migrate to package sse_test because the tests access unexported
-// identifiers: errWriter (type), Stream.getSubscriberCount (method),
-// Server.getStream (method).
-package sse
+// Black-box tests for http.go — package sse_test.
+// TestErrWriterStopsOnError (which needs the unexported errWriter type) is
+// kept in http_internal_test.go (package sse) per the testpackage linter
+// convention.
+package sse_test
 
 import (
 	"context"
-	"errors"
 	"fmt"
 	"net/http"
 	"net/http/httptest"
@@ -21,27 +20,13 @@ import (
 	"time"
 
 	backoff "github.com/cenkalti/backoff/v4"
+	sse "github.com/joshuafuller/sse/v3"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
 
-// errAfterNWriter is a ResponseWriter that returns an error after n bytes.
-type errAfterNWriter struct {
-	http.ResponseWriter
-	remaining int
-}
-
-func (e *errAfterNWriter) Write(p []byte) (int, error) {
-	if len(p) > e.remaining {
-		e.remaining = 0
-		return 0, errors.New("write error: connection closed")
-	}
-	e.remaining -= len(p)
-	return e.ResponseWriter.Write(p)
-}
-
 func TestHTTPStreamHandler(t *testing.T) {
-	s := New()
+	s := sse.New()
 	defer s.Close()
 
 	mux := http.NewServeMux()
@@ -50,12 +35,12 @@ func TestHTTPStreamHandler(t *testing.T) {
 
 	s.CreateStream("test")
 
-	c := NewClient(server.URL + "/events")
+	c := sse.NewClient(server.URL + "/events")
 
-	events := make(chan *Event)
+	events := make(chan *sse.Event)
 	var cErr error
 	go func() {
-		cErr = c.Subscribe("test", func(msg *Event) {
+		cErr = c.Subscribe("test", func(msg *sse.Event) {
 			if msg.Data != nil {
 				events <- msg
 				return
@@ -66,7 +51,7 @@ func TestHTTPStreamHandler(t *testing.T) {
 	// Wait for subscriber to be registered and message to be published
 	time.Sleep(time.Millisecond * 200)
 	require.Nil(t, cErr)
-	s.Publish("test", &Event{Data: []byte("test")})
+	s.Publish("test", &sse.Event{Data: []byte("test")})
 
 	msg, err := wait(events, time.Millisecond*500)
 	require.Nil(t, err)
@@ -74,7 +59,7 @@ func TestHTTPStreamHandler(t *testing.T) {
 }
 
 func TestHTTPStreamHandlerExistingEvents(t *testing.T) {
-	s := New()
+	s := sse.New()
 	defer s.Close()
 
 	mux := http.NewServeMux()
@@ -83,18 +68,18 @@ func TestHTTPStreamHandlerExistingEvents(t *testing.T) {
 
 	s.CreateStream("test")
 
-	s.Publish("test", &Event{Data: []byte("test 1")})
-	s.Publish("test", &Event{Data: []byte("test 2")})
-	s.Publish("test", &Event{Data: []byte("test 3")})
+	s.Publish("test", &sse.Event{Data: []byte("test 1")})
+	s.Publish("test", &sse.Event{Data: []byte("test 2")})
+	s.Publish("test", &sse.Event{Data: []byte("test 3")})
 
 	time.Sleep(time.Millisecond * 100)
 
-	c := NewClient(server.URL + "/events")
+	c := sse.NewClient(server.URL + "/events")
 
-	events := make(chan *Event)
+	events := make(chan *sse.Event)
 	var cErr error
 	go func() {
-		cErr = c.Subscribe("test", func(msg *Event) {
+		cErr = c.Subscribe("test", func(msg *sse.Event) {
 			if len(msg.Data) > 0 {
 				events <- msg
 			}
@@ -111,7 +96,7 @@ func TestHTTPStreamHandlerExistingEvents(t *testing.T) {
 }
 
 func TestHTTPStreamHandlerEventID(t *testing.T) {
-	s := New()
+	s := sse.New()
 	defer s.Close()
 
 	mux := http.NewServeMux()
@@ -120,19 +105,19 @@ func TestHTTPStreamHandlerEventID(t *testing.T) {
 
 	s.CreateStream("test")
 
-	s.Publish("test", &Event{Data: []byte("test 1")})
-	s.Publish("test", &Event{Data: []byte("test 2")})
-	s.Publish("test", &Event{Data: []byte("test 3")})
+	s.Publish("test", &sse.Event{Data: []byte("test 1")})
+	s.Publish("test", &sse.Event{Data: []byte("test 2")})
+	s.Publish("test", &sse.Event{Data: []byte("test 3")})
 
 	time.Sleep(time.Millisecond * 100)
 
-	c := NewClient(server.URL + "/events")
+	c := sse.NewClient(server.URL + "/events")
 	c.LastEventID.Store([]byte("2"))
 
-	events := make(chan *Event)
+	events := make(chan *sse.Event)
 	var cErr error
 	go func() {
-		cErr = c.Subscribe("test", func(msg *Event) {
+		cErr = c.Subscribe("test", func(msg *sse.Event) {
 			if len(msg.Data) > 0 {
 				events <- msg
 			}
@@ -147,7 +132,7 @@ func TestHTTPStreamHandlerEventID(t *testing.T) {
 }
 
 func TestHTTPStreamHandlerEventTTL(t *testing.T) {
-	s := New()
+	s := sse.New()
 	defer s.Close()
 
 	s.EventTTL = time.Second * 1
@@ -158,19 +143,19 @@ func TestHTTPStreamHandlerEventTTL(t *testing.T) {
 
 	s.CreateStream("test")
 
-	s.Publish("test", &Event{Data: []byte("test 1")})
-	s.Publish("test", &Event{Data: []byte("test 2")})
+	s.Publish("test", &sse.Event{Data: []byte("test 1")})
+	s.Publish("test", &sse.Event{Data: []byte("test 2")})
 	time.Sleep(time.Second * 2)
-	s.Publish("test", &Event{Data: []byte("test 3")})
+	s.Publish("test", &sse.Event{Data: []byte("test 3")})
 
 	time.Sleep(time.Millisecond * 100)
 
-	c := NewClient(server.URL + "/events")
+	c := sse.NewClient(server.URL + "/events")
 
-	events := make(chan *Event)
+	events := make(chan *sse.Event)
 	var cErr error
 	go func() {
-		cErr = c.Subscribe("test", func(msg *Event) {
+		cErr = c.Subscribe("test", func(msg *sse.Event) {
 			if len(msg.Data) > 0 {
 				events <- msg
 			}
@@ -185,7 +170,7 @@ func TestHTTPStreamHandlerEventTTL(t *testing.T) {
 }
 
 func TestHTTPStreamHandlerHeaderFlushIfNoEvents(t *testing.T) {
-	s := New()
+	s := sse.New()
 	defer s.Close()
 
 	mux := http.NewServeMux()
@@ -194,10 +179,10 @@ func TestHTTPStreamHandlerHeaderFlushIfNoEvents(t *testing.T) {
 
 	s.CreateStream("test")
 
-	c := NewClient(server.URL + "/events")
+	c := sse.NewClient(server.URL + "/events")
 
 	subscribed := make(chan struct{})
-	events := make(chan *Event)
+	events := make(chan *sse.Event)
 	go func() {
 		assert.NoError(t, c.SubscribeChan("test", events))
 		subscribed <- struct{}{}
@@ -211,7 +196,7 @@ func TestHTTPStreamHandlerHeaderFlushIfNoEvents(t *testing.T) {
 }
 
 func TestHTTPStreamHandlerNonNumericLastEventID(t *testing.T) {
-	s := New()
+	s := sse.New()
 	defer s.Close()
 
 	s.CreateStream("test")
@@ -238,7 +223,7 @@ func TestHTTPStreamHandlerNonNumericLastEventID(t *testing.T) {
 }
 
 func TestHTTPStreamHandlerMissingStreamReturns404(t *testing.T) {
-	s := New()
+	s := sse.New()
 	defer s.Close()
 
 	s.AutoStream = false
@@ -258,7 +243,7 @@ func TestHTTPStreamHandlerMissingStreamReturns404(t *testing.T) {
 }
 
 func TestHTTPStreamHandlerEmptyEventDoesNotBreakLoop(t *testing.T) {
-	s := New()
+	s := sse.New()
 	defer s.Close()
 
 	s.AutoReplay = false
@@ -278,19 +263,19 @@ func TestHTTPStreamHandlerEmptyEventDoesNotBreakLoop(t *testing.T) {
 
 	// Wait for subscriber to register
 	for i := 0; i < 50; i++ {
-		if stream.getSubscriberCount() > 0 {
+		if stream.SubscriberCount() > 0 {
 			break
 		}
 		time.Sleep(time.Millisecond * 10)
 	}
-	require.Greater(t, stream.getSubscriberCount(), 0, "subscriber should be registered")
+	require.Greater(t, stream.SubscriberCount(), 0, "subscriber should be registered")
 
 	// Publish an event with an ID but empty data and no comment.
 	// This should be skipped (continue), not terminate the loop (break).
-	s.Publish("test", &Event{ID: []byte("skip-me")})
+	s.Publish("test", &sse.Event{ID: []byte("skip-me")})
 
 	// Publish a real event after the empty one
-	s.Publish("test", &Event{Data: []byte("real event")})
+	s.Publish("test", &sse.Event{Data: []byte("real event")})
 
 	// Read from the SSE stream -- we should get the real event
 	done := make(chan []byte, 1)
@@ -310,7 +295,7 @@ func TestHTTPStreamHandlerEmptyEventDoesNotBreakLoop(t *testing.T) {
 }
 
 func TestHTTPServerOmitsIDFieldWhenEmpty(t *testing.T) {
-	s := New()
+	s := sse.New()
 	defer s.Close()
 
 	s.AutoReplay = false
@@ -329,15 +314,15 @@ func TestHTTPServerOmitsIDFieldWhenEmpty(t *testing.T) {
 
 	// Wait for subscriber to register
 	for i := 0; i < 50; i++ {
-		if stream.getSubscriberCount() > 0 {
+		if stream.SubscriberCount() > 0 {
 			break
 		}
 		time.Sleep(time.Millisecond * 10)
 	}
-	require.Greater(t, stream.getSubscriberCount(), 0, "subscriber should be registered")
+	require.Greater(t, stream.SubscriberCount(), 0, "subscriber should be registered")
 
 	// Publish an event with data but NO ID
-	s.Publish("test", &Event{Data: []byte("hello")})
+	s.Publish("test", &sse.Event{Data: []byte("hello")})
 
 	done := make(chan []byte, 1)
 	go func() {
@@ -357,7 +342,7 @@ func TestHTTPServerOmitsIDFieldWhenEmpty(t *testing.T) {
 }
 
 func TestHTTPServerEmitsIDFieldWhenPresent(t *testing.T) {
-	s := New()
+	s := sse.New()
 	defer s.Close()
 
 	s.AutoReplay = false
@@ -376,15 +361,15 @@ func TestHTTPServerEmitsIDFieldWhenPresent(t *testing.T) {
 
 	// Wait for subscriber to register
 	for i := 0; i < 50; i++ {
-		if stream.getSubscriberCount() > 0 {
+		if stream.SubscriberCount() > 0 {
 			break
 		}
 		time.Sleep(time.Millisecond * 10)
 	}
-	require.Greater(t, stream.getSubscriberCount(), 0, "subscriber should be registered")
+	require.Greater(t, stream.SubscriberCount(), 0, "subscriber should be registered")
 
 	// Publish an event WITH an ID
-	s.Publish("test", &Event{Data: []byte("hello"), ID: []byte("evt-42")})
+	s.Publish("test", &sse.Event{Data: []byte("hello"), ID: []byte("evt-42")})
 
 	done := make(chan []byte, 1)
 	go func() {
@@ -414,7 +399,7 @@ func TestHTTPServerEmitsIDFieldWhenPresent(t *testing.T) {
 func TestServerEmptyIDResetsClientLastEventID(t *testing.T) {
 	t.Parallel()
 
-	s := New()
+	s := sse.New()
 	defer s.Close()
 	s.AutoReplay = false
 
@@ -425,7 +410,7 @@ func TestServerEmptyIDResetsClientLastEventID(t *testing.T) {
 	srv := httptest.NewServer(mux)
 	defer srv.Close()
 
-	c := NewClient(srv.URL + "/events")
+	c := sse.NewClient(srv.URL + "/events")
 	// Stop reconnecting automatically so the test exits cleanly.
 	b := backoff.NewExponentialBackOff()
 	b.MaxElapsedTime = 0 // retry indefinitely — we'll cancel via context
@@ -433,18 +418,18 @@ func TestServerEmptyIDResetsClientLastEventID(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
-	received := make(chan *Event, 10)
+	received := make(chan *sse.Event, 10)
 	go func() {
 		c.SubscribeChanWithContext(ctx, "test-empty-id", received)
 	}()
 
 	// Wait for the subscriber to register.
 	require.Eventually(t, func() bool {
-		return stream.getSubscriberCount() == 1
+		return stream.SubscriberCount() == 1
 	}, 2*time.Second, 10*time.Millisecond, "subscriber did not register in time")
 
 	// Publish event 1: ID "abc", data "first".
-	s.Publish("test-empty-id", &Event{
+	s.Publish("test-empty-id", &sse.Event{
 		ID:        []byte("abc"),
 		IDPresent: true,
 		Data:      []byte("first"),
@@ -461,7 +446,7 @@ func TestServerEmptyIDResetsClientLastEventID(t *testing.T) {
 	assert.Equal(t, []byte("abc"), lastID, "LastEventID should be 'abc' after first event")
 
 	// Publish event 2: explicit empty ID (IDPresent true, ID empty) — should reset LastEventID.
-	s.Publish("test-empty-id", &Event{
+	s.Publish("test-empty-id", &sse.Event{
 		ID:        []byte{},
 		IDPresent: true,
 		Data:      []byte("second"),
@@ -487,7 +472,7 @@ func TestServerEmptyIDResetsClientLastEventID(t *testing.T) {
 func TestServerEmptyIDEmitsBareLine(t *testing.T) {
 	t.Parallel()
 
-	s := New()
+	s := sse.New()
 	defer s.Close()
 	s.AutoReplay = false
 
@@ -505,10 +490,10 @@ func TestServerEmptyIDEmitsBareLine(t *testing.T) {
 
 	// Wait for subscriber.
 	require.Eventually(t, func() bool {
-		return stream.getSubscriberCount() == 1
+		return stream.SubscriberCount() == 1
 	}, 2*time.Second, 10*time.Millisecond, "subscriber did not register in time")
 
-	s.Publish("raw-empty-id", &Event{
+	s.Publish("raw-empty-id", &sse.Event{
 		ID:        []byte{},
 		IDPresent: true,
 		Data:      []byte("payload"),
@@ -539,7 +524,7 @@ func TestServerEmptyIDEmitsBareLine(t *testing.T) {
 func TestServerRetryFieldIsAllDigits(t *testing.T) {
 	t.Parallel()
 
-	s := New()
+	s := sse.New()
 	defer s.Close()
 	s.AutoReplay = false
 
@@ -557,10 +542,10 @@ func TestServerRetryFieldIsAllDigits(t *testing.T) {
 
 	// Wait for subscriber.
 	require.Eventually(t, func() bool {
-		return stream.getSubscriberCount() == 1
+		return stream.SubscriberCount() == 1
 	}, 2*time.Second, 10*time.Millisecond, "subscriber did not register in time")
 
-	s.Publish("retry-digits", &Event{
+	s.Publish("retry-digits", &sse.Event{
 		Data:  []byte("hello"),
 		Retry: []byte("3000"),
 	})
@@ -596,38 +581,10 @@ func TestServerRetryFieldIsAllDigits(t *testing.T) {
 	}
 }
 
-func TestErrWriterStopsOnError(t *testing.T) {
-	t.Parallel()
-
-	w := &errAfterNWriter{
-		ResponseWriter: httptest.NewRecorder(),
-		remaining:      10, // allow 10 bytes then fail
-	}
-
-	ew := &errWriter{w: w}
-
-	// First write should succeed (fits in 10 bytes)
-	ew.printf("hi")
-	assert.Nil(t, ew.err, "first write should succeed")
-
-	// This write should fail (exceeds remaining bytes)
-	ew.printf("this is a long string that exceeds the limit")
-	assert.NotNil(t, ew.err, "write past limit should fail")
-
-	prevErr := ew.err
-
-	// Subsequent writes should be no-ops
-	ew.printf("more data")
-	assert.Equal(t, prevErr, ew.err, "error should not change after first failure")
-
-	ew.print("yet more")
-	assert.Equal(t, prevErr, ew.err, "print should also be a no-op after error")
-}
-
 func TestHTTPStreamHandlerAutoStream(t *testing.T) {
 	t.Parallel()
 
-	sseServer := New()
+	sseServer := sse.New()
 	defer sseServer.Close()
 
 	sseServer.AutoReplay = false
@@ -638,9 +595,9 @@ func TestHTTPStreamHandlerAutoStream(t *testing.T) {
 	mux.HandleFunc("/events", sseServer.ServeHTTP)
 	server := httptest.NewServer(mux)
 
-	c := NewClient(server.URL + "/events")
+	c := sse.NewClient(server.URL + "/events")
 
-	events := make(chan *Event)
+	events := make(chan *sse.Event)
 
 	cErr := make(chan error)
 
@@ -650,7 +607,7 @@ func TestHTTPStreamHandlerAutoStream(t *testing.T) {
 
 	require.Nil(t, <-cErr)
 
-	sseServer.Publish("test", &Event{Data: []byte("test")})
+	sseServer.Publish("test", &sse.Event{Data: []byte("test")})
 
 	msg, err := wait(events, 1*time.Second)
 
@@ -662,7 +619,7 @@ func TestHTTPStreamHandlerAutoStream(t *testing.T) {
 
 	_, _ = wait(events, 1*time.Second)
 
-	assert.Equal(t, (*Stream)(nil), sseServer.getStream("test"))
+	assert.Equal(t, ((*sse.Stream)(nil)), sseServer.GetStream("test"))
 }
 
 // TestPerStreamOnSubscribeOverride verifies sse-iju:
@@ -674,10 +631,10 @@ func TestPerStreamOnSubscribeOverride(t *testing.T) {
 	var serverCalls int32 // count of server-level OnSubscribe calls
 	var streamCalls int32 // count of per-stream StreamOnSubscribe calls
 
-	s := New()
+	s := sse.New()
 	defer s.Close()
 
-	s.OnSubscribe = func(streamID string, sub *Subscriber) {
+	s.OnSubscribe = func(streamID string, sub *sse.Subscriber) {
 		atomic.AddInt32(&serverCalls, 1)
 	}
 
@@ -689,7 +646,7 @@ func TestPerStreamOnSubscribeOverride(t *testing.T) {
 	streamAlpha := s.CreateStream("alpha")
 
 	// Set a per-stream callback on alpha using the thread-safe setter.
-	streamAlpha.SetOnSubscribe(func(streamID string, sub *Subscriber) {
+	streamAlpha.SetOnSubscribe(func(streamID string, sub *sse.Subscriber) {
 		atomic.AddInt32(&streamCalls, 1)
 	})
 
@@ -730,7 +687,7 @@ func TestPerStreamOnUnsubscribeOverride(t *testing.T) {
 
 	var streamUnsub int32
 
-	s := New()
+	s := sse.New()
 	defer s.Close()
 
 	mux := http.NewServeMux()
@@ -738,7 +695,7 @@ func TestPerStreamOnUnsubscribeOverride(t *testing.T) {
 	srv := httptest.NewServer(mux)
 
 	stream := s.CreateStream("gamma")
-	stream.SetOnUnsubscribe(func(streamID string, sub *Subscriber) {
+	stream.SetOnUnsubscribe(func(streamID string, sub *sse.Subscriber) {
 		atomic.AddInt32(&streamUnsub, 1)
 	})
 
@@ -771,7 +728,7 @@ func TestPerStreamOnUnsubscribeOverride(t *testing.T) {
 func TestMaxSubscribersRejects429(t *testing.T) {
 	t.Parallel()
 
-	s := New()
+	s := sse.New()
 	defer s.Close()
 	s.AutoReplay = false
 
@@ -794,7 +751,7 @@ func TestMaxSubscribersRejects429(t *testing.T) {
 
 	// Wait for the first subscriber to be registered.
 	require.Eventually(t, func() bool {
-		return stream.getSubscriberCount() == 1
+		return stream.SubscriberCount() == 1
 	}, 2*time.Second, 10*time.Millisecond, "first subscriber did not register in time")
 
 	// Second client — should be rejected with 429.
@@ -812,7 +769,7 @@ func TestMaxSubscribersRejects429(t *testing.T) {
 func TestMaxSubscribersZeroMeansUnlimited(t *testing.T) {
 	t.Parallel()
 
-	s := New()
+	s := sse.New()
 	defer s.Close()
 	s.AutoReplay = false
 
@@ -834,7 +791,7 @@ func TestMaxSubscribersZeroMeansUnlimited(t *testing.T) {
 	}
 
 	require.Eventually(t, func() bool {
-		return stream.getSubscriberCount() == 3
+		return stream.SubscriberCount() == 3
 	}, 2*time.Second, 10*time.Millisecond, "all 3 subscribers should connect when MaxSubscribers is 0")
 }
 
@@ -844,7 +801,7 @@ func TestMaxSubscribersZeroMeansUnlimited(t *testing.T) {
 func TestServeHTTPWithFlusher(t *testing.T) {
 	t.Parallel()
 
-	s := New()
+	s := sse.New()
 	defer s.Close()
 	s.AutoReplay = false
 
@@ -875,11 +832,11 @@ func TestServeHTTPWithFlusher(t *testing.T) {
 	}()
 
 	require.Eventually(t, func() bool {
-		return stream.getSubscriberCount() == 1
+		return stream.SubscriberCount() == 1
 	}, 2*time.Second, 10*time.Millisecond, "subscriber did not register in time")
 
 	// Publish an event and make sure the client receives it.
-	s.Publish("flushertest", &Event{Data: []byte("hello-fiber")})
+	s.Publish("flushertest", &sse.Event{Data: []byte("hello-fiber")})
 
 	select {
 	case resp := <-respCh:
@@ -911,7 +868,7 @@ func (m *mockFlusher) Flush() {
 func TestServeHTTPWithFlusherNonFlusherResponseWriter(t *testing.T) {
 	t.Parallel()
 
-	s := New()
+	s := sse.New()
 	defer s.Close()
 
 	// nonFlusherWriter wraps a recorder but does NOT expose http.Flusher.
@@ -937,7 +894,7 @@ func TestServeHTTPWithFlusherNonFlusherResponseWriter(t *testing.T) {
 func TestOnSubscribeHTTP(t *testing.T) {
 	t.Parallel()
 
-	s := New()
+	s := sse.New()
 	defer s.Close()
 	s.AutoReplay = false
 

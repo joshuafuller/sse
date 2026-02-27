@@ -210,3 +210,9 @@ func (str *Stream) removeAllSubscribers() {
 func (str *Stream) getSubscriberCount() int {
 	return int(atomic.LoadInt32(&str.subscriberCount))
 }
+
+// SubscriberCount returns the current number of active subscribers on this stream.
+// It is safe to call concurrently.
+func (str *Stream) SubscriberCount() int {
+	return str.getSubscriberCount()
+}
