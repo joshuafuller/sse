@@ -615,6 +615,289 @@ func (b *bodyCloseTracker) Close() error {
 	return b.ReadCloser.Close()
 }
 
+// TestLastEventIDReset verifies that an empty id: field resets LastEventID
+// to empty, per WHATWG SSE §9.2.6.
+func TestLastEventIDReset(t *testing.T) {
+	// First event sets id to 42, second event has empty id: which resets it.
+	raw := "id: 42\ndata: first\n\nid:\ndata: second\n\n"
+
+	tsrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		w.WriteHeader(http.StatusOK)
+		fmt.Fprint(w, raw)
+		w.(http.Flusher).Flush()
+	}))
+	defer tsrv.Close()
+
+	c := NewClient(tsrv.URL)
+	c.ReconnectStrategy = backoff.WithMaxRetries(backoff.NewExponentialBackOff(), 0)
+
+	var received []*Event
+	var mu sync.Mutex
+	done := make(chan struct{})
+
+	go func() {
+		c.SubscribeRaw(func(msg *Event) {
+			mu.Lock()
+			received = append(received, msg)
+			if len(received) >= 2 {
+				mu.Unlock()
+				close(done)
+				return
+			}
+			mu.Unlock()
+		})
+	}()
+
+	select {
+	case <-done:
+	case <-time.After(3 * time.Second):
+		t.Fatal("timed out waiting for events")
+	}
+
+	// After the second event (id:\n), LastEventID should be empty.
+	lastID, _ := c.LastEventID.Load().([]byte)
+	assert.Empty(t, lastID, "LastEventID should be reset to empty by id: with empty value")
+}
+
+// TestLastEventIDPersistsWhenAbsent verifies that when no id: field is present,
+// LastEventID remains unchanged from a previous event.
+func TestLastEventIDPersistsWhenAbsent(t *testing.T) {
+	// First event sets id to 42, second event has no id: field at all.
+	raw := "id: 42\ndata: first\n\ndata: second\n\n"
+
+	tsrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		w.WriteHeader(http.StatusOK)
+		fmt.Fprint(w, raw)
+		w.(http.Flusher).Flush()
+	}))
+	defer tsrv.Close()
+
+	c := NewClient(tsrv.URL)
+	c.ReconnectStrategy = backoff.WithMaxRetries(backoff.NewExponentialBackOff(), 0)
+
+	var received []*Event
+	var mu sync.Mutex
+	done := make(chan struct{})
+
+	go func() {
+		c.SubscribeRaw(func(msg *Event) {
+			mu.Lock()
+			received = append(received, msg)
+			if len(received) >= 2 {
+				mu.Unlock()
+				close(done)
+				return
+			}
+			mu.Unlock()
+		})
+	}()
+
+	select {
+	case <-done:
+	case <-time.After(3 * time.Second):
+		t.Fatal("timed out waiting for events")
+	}
+
+	lastID, _ := c.LastEventID.Load().([]byte)
+	assert.Equal(t, []byte("42"), lastID, "LastEventID should persist when id: field is absent")
+}
+
+// TestSubscribeFailsOnWrongContentType verifies that the client fails permanently
+// when the server responds with a non-SSE Content-Type.
+func TestSubscribeFailsOnWrongContentType(t *testing.T) {
+	var requests int
+	tsrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		requests++
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusOK)
+		fmt.Fprint(w, `{"error": "not sse"}`)
+	}))
+	defer tsrv.Close()
+
+	c := NewClient(tsrv.URL)
+	err := c.SubscribeRaw(func(msg *Event) {})
+
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "content-type")
+	assert.Equal(t, 1, requests, "client must not reconnect after wrong content-type")
+}
+
+// TestSubscribeAcceptsContentTypeWithParams verifies that text/event-stream
+// with parameters (e.g. charset=utf-8) is accepted.
+func TestSubscribeAcceptsContentTypeWithParams(t *testing.T) {
+	tsrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream; charset=utf-8")
+		w.WriteHeader(http.StatusOK)
+		fmt.Fprint(w, "data: hello\n\n")
+		w.(http.Flusher).Flush()
+	}))
+	defer tsrv.Close()
+
+	c := NewClient(tsrv.URL)
+	c.ReconnectStrategy = backoff.WithMaxRetries(backoff.NewExponentialBackOff(), 0)
+
+	done := make(chan struct{})
+	go func() {
+		c.SubscribeRaw(func(msg *Event) {
+			close(done)
+		})
+	}()
+
+	select {
+	case <-done:
+		// good — event received with parameterized content-type
+	case <-time.After(3 * time.Second):
+		t.Fatal("timed out waiting for event with parameterized content-type")
+	}
+}
+
+// TestRetryFieldUpdatesReconnectDelay verifies that a valid retry: field
+// is applied to the reconnect delay, per WHATWG SSE §9.2.6.
+func TestRetryFieldUpdatesReconnectDelay(t *testing.T) {
+	var mu sync.Mutex
+	var connectTimes []time.Time
+
+	tsrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		mu.Lock()
+		connectTimes = append(connectTimes, time.Now())
+		n := len(connectTimes)
+		mu.Unlock()
+
+		w.Header().Set("Content-Type", "text/event-stream")
+		w.WriteHeader(http.StatusOK)
+
+		if n == 1 {
+			// First connection: send retry and data, then close.
+			fmt.Fprint(w, "retry: 200\ndata: hello\n\n")
+		} else {
+			// Second connection: send data then close.
+			fmt.Fprint(w, "data: world\n\n")
+		}
+		w.(http.Flusher).Flush()
+	}))
+	defer tsrv.Close()
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	c := NewClient(tsrv.URL)
+	// Do NOT set ReconnectStrategy — let the default be used with retry override.
+
+	var received int
+	done := make(chan struct{})
+
+	go func() {
+		c.SubscribeRawWithContext(ctx, func(msg *Event) {
+			received++
+			if received >= 2 {
+				close(done)
+			}
+		})
+	}()
+
+	select {
+	case <-done:
+	case <-ctx.Done():
+		t.Fatal("timed out waiting for two events")
+	}
+
+	mu.Lock()
+	defer mu.Unlock()
+	require.GreaterOrEqual(t, len(connectTimes), 2)
+	gap := connectTimes[1].Sub(connectTimes[0])
+	assert.GreaterOrEqual(t, gap.Milliseconds(), int64(150),
+		"reconnect delay should reflect retry: 200 field (got %v)", gap)
+}
+
+// TestRetryFieldIgnoresNonNumeric verifies that retry: with non-numeric value is ignored.
+func TestRetryFieldIgnoresNonNumeric(t *testing.T) {
+	tsrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		w.WriteHeader(http.StatusOK)
+		fmt.Fprint(w, "retry: notanumber\ndata: hello\n\n")
+		w.(http.Flusher).Flush()
+	}))
+	defer tsrv.Close()
+
+	c := NewClient(tsrv.URL)
+	c.ReconnectStrategy = backoff.WithMaxRetries(backoff.NewExponentialBackOff(), 0)
+
+	done := make(chan struct{})
+	go func() {
+		c.SubscribeRaw(func(msg *Event) {
+			close(done)
+		})
+	}()
+
+	select {
+	case <-done:
+		// Event received successfully; non-numeric retry was ignored.
+	case <-time.After(3 * time.Second):
+		t.Fatal("timed out")
+	}
+
+	// retryDelay should be zero (non-numeric ignored).
+	c.mu.Lock()
+	assert.Equal(t, time.Duration(0), c.retryDelay, "non-numeric retry should be ignored")
+	c.mu.Unlock()
+}
+
+// TestReadLoopDoesNotLeakOnConsumerExit verifies that readLoop does not
+// block forever when the consumer exits without reading from erChan.
+// With an unbuffered erChan, the goroutine would block on send and leak.
+func TestReadLoopDoesNotLeakOnConsumerExit(t *testing.T) {
+	c := NewClient("http://localhost")
+
+	// A reader that immediately returns EOF.
+	errReader := io.NopCloser(strings.NewReader(""))
+	reader := NewEventStreamReader(errReader, 4096)
+
+	before := runtime.NumGoroutine()
+
+	// Use startReadLoop which creates the erChan internally.
+	// Do NOT read from erChan at all — simulate consumer exit.
+	c.startReadLoop(reader)
+
+	// Give the goroutine time to complete (if buffered) or block (if unbuffered).
+	time.Sleep(200 * time.Millisecond)
+	after := runtime.NumGoroutine()
+
+	// If erChan is buffered, the goroutine completes and we should see no growth.
+	// With unbuffered erChan, the goroutine is stuck and we see +1.
+	assert.LessOrEqual(t, after, before,
+		"readLoop goroutine should not leak when consumer does not read erChan")
+}
+
+// TestEventStreamReaderStripsLeadingBOM verifies that a leading UTF-8 BOM
+// (EF BB BF) is stripped before processing, per WHATWG SSE §9.2.6.
+func TestEventStreamReaderStripsLeadingBOM(t *testing.T) {
+	// BOM followed by a normal SSE event.
+	input := "\xEF\xBB\xBFdata: hello\n\n"
+	reader := NewEventStreamReader(strings.NewReader(input), 4096)
+	eventBytes, err := reader.ReadEvent()
+	require.NoError(t, err)
+
+	c := NewClient("http://localhost")
+	event, err := c.processEvent(eventBytes)
+	require.NoError(t, err)
+	assert.Equal(t, []byte("hello"), event.Data, "BOM should be stripped; data must parse cleanly")
+}
+
+// TestEventStreamReaderNoBOM verifies normal operation without a BOM.
+func TestEventStreamReaderNoBOM(t *testing.T) {
+	input := "data: world\n\n"
+	reader := NewEventStreamReader(strings.NewReader(input), 4096)
+	eventBytes, err := reader.ReadEvent()
+	require.NoError(t, err)
+
+	c := NewClient("http://localhost")
+	event, err := c.processEvent(eventBytes)
+	require.NoError(t, err)
+	assert.Equal(t, []byte("world"), event.Data)
+}
+
 // TestReadEventBufferOverflow verifies that when an SSE payload exceeds the
 // scanner buffer, ReadEvent returns bufio.ErrTooLong rather than io.EOF.
 // Regression test for sse-2e2.

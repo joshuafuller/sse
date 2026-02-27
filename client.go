@@ -11,7 +11,9 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"mime"
 	"net/http"
+	"strconv"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -53,6 +55,7 @@ type Client struct {
 	LastEventID       atomic.Value // []byte
 	maxBufferSize     int
 	mu                sync.Mutex
+	retryDelay        time.Duration
 	EncodingBase64    bool
 	Connected         bool
 }
@@ -93,10 +96,18 @@ func (c *Client) SubscribeWithContext(ctx context.Context, stream string, handle
 			if err != nil {
 				return err
 			}
-		} else if resp.StatusCode == http.StatusNoContent {
-			return backoff.Permanent(fmt.Errorf("server returned 204 No Content: reconnection disabled"))
-		} else if resp.StatusCode != http.StatusOK {
-			return fmt.Errorf("could not connect to stream: %s", http.StatusText(resp.StatusCode))
+		} else {
+			if resp.StatusCode == http.StatusNoContent {
+				return backoff.Permanent(fmt.Errorf("server returned 204 No Content: reconnection disabled"))
+			}
+			if resp.StatusCode != http.StatusOK {
+				return fmt.Errorf("could not connect to stream: %s", http.StatusText(resp.StatusCode))
+			}
+			ct := resp.Header.Get("Content-Type")
+			mediaType, _, _ := mime.ParseMediaType(ct)
+			if mediaType != "text/event-stream" {
+				return backoff.Permanent(fmt.Errorf("invalid content-type %q: expected text/event-stream", ct))
+			}
 		}
 
 		reader := NewEventStreamReader(resp.Body, c.maxBufferSize)
@@ -119,7 +130,13 @@ func (c *Client) SubscribeWithContext(ctx context.Context, stream string, handle
 	if c.ReconnectStrategy != nil {
 		b = backoff.WithContext(c.ReconnectStrategy, ctx)
 	} else {
-		b = backoff.WithContext(backoff.NewExponentialBackOff(), ctx)
+		eb := backoff.NewExponentialBackOff()
+		c.mu.Lock()
+		if c.retryDelay > 0 {
+			eb.InitialInterval = c.retryDelay
+		}
+		c.mu.Unlock()
+		b = backoff.WithContext(eb, ctx)
 	}
 	err = backoff.RetryNotify(operation, b, c.ReconnectNotify)
 	return err
@@ -150,10 +167,18 @@ func (c *Client) SubscribeChanWithContext(ctx context.Context, stream string, ch
 			if err != nil {
 				return err
 			}
-		} else if resp.StatusCode == http.StatusNoContent {
-			return backoff.Permanent(fmt.Errorf("server returned 204 No Content: reconnection disabled"))
-		} else if resp.StatusCode != http.StatusOK {
-			return fmt.Errorf("could not connect to stream: %s", http.StatusText(resp.StatusCode))
+		} else {
+			if resp.StatusCode == http.StatusNoContent {
+				return backoff.Permanent(fmt.Errorf("server returned 204 No Content: reconnection disabled"))
+			}
+			if resp.StatusCode != http.StatusOK {
+				return fmt.Errorf("could not connect to stream: %s", http.StatusText(resp.StatusCode))
+			}
+			ct := resp.Header.Get("Content-Type")
+			mediaType, _, _ := mime.ParseMediaType(ct)
+			if mediaType != "text/event-stream" {
+				return backoff.Permanent(fmt.Errorf("invalid content-type %q: expected text/event-stream", ct))
+			}
 		}
 
 		if !connected {
@@ -197,7 +222,13 @@ func (c *Client) SubscribeChanWithContext(ctx context.Context, stream string, ch
 		if c.ReconnectStrategy != nil {
 			b = backoff.WithContext(c.ReconnectStrategy, ctx)
 		} else {
-			b = backoff.WithContext(backoff.NewExponentialBackOff(), ctx)
+			eb := backoff.NewExponentialBackOff()
+			c.mu.Lock()
+			if c.retryDelay > 0 {
+				eb.InitialInterval = c.retryDelay
+			}
+			c.mu.Unlock()
+			b = backoff.WithContext(eb, ctx)
 		}
 		err = backoff.RetryNotify(operation, b, c.ReconnectNotify)
 
@@ -213,7 +244,7 @@ func (c *Client) SubscribeChanWithContext(ctx context.Context, stream string, ch
 
 func (c *Client) startReadLoop(reader *EventStreamReader) (chan *Event, chan error) {
 	outCh := make(chan *Event)
-	erChan := make(chan error)
+	erChan := make(chan error, 1)
 	go c.readLoop(reader, outCh, erChan)
 	return outCh, erChan
 }
@@ -244,10 +275,21 @@ func (c *Client) readLoop(reader *EventStreamReader, outCh chan *Event, erChan c
 		// If we get an error, ignore it.
 		var msg *Event
 		if msg, err = c.processEvent(event); err == nil {
-			if len(msg.ID) > 0 {
+			if msg.IDPresent {
+				// id: field was explicitly present; store the value (may be empty)
 				c.LastEventID.Store(msg.ID)
 			} else {
+				// No id: field; inherit previous LastEventID for the event struct only
 				msg.ID, _ = c.LastEventID.Load().([]byte)
+			}
+
+			// Apply retry: field if it contains only ASCII digits.
+			if len(msg.Retry) > 0 {
+				if n, err := strconv.ParseInt(string(msg.Retry), 10, 64); err == nil {
+					c.mu.Lock()
+					c.retryDelay = time.Duration(n) * time.Millisecond
+					c.mu.Unlock()
+				}
 			}
 
 			// Per WHATWG spec: if the data buffer is empty, do not dispatch
@@ -347,6 +389,7 @@ func (c *Client) processEvent(msg []byte) (event *Event, err error) {
 	for _, line := range bytes.FieldsFunc(msg, func(r rune) bool { return r == '\n' || r == '\r' }) {
 		switch {
 		case bytes.HasPrefix(line, headerID):
+			e.IDPresent = true
 			e.ID = append([]byte(nil), trimHeader(len(headerID), line)...)
 		case bytes.HasPrefix(line, headerData):
 			// The spec allows for multiple data fields per event, concatenated them with "\n".

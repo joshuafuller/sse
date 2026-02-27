@@ -15,6 +15,7 @@ import (
 // Event holds all of the event source fields
 type Event struct {
 	timestamp time.Time
+	IDPresent bool   // true if an id: field was seen in this event
 	ID        []byte
 	Data      []byte
 	Event     []byte
@@ -31,9 +32,19 @@ type EventStreamReader struct {
 	scanner *bufio.Scanner
 }
 
+// stripBOM removes a leading UTF-8 BOM (EF BB BF) if present.
+func stripBOM(r io.Reader) io.Reader {
+	buf := make([]byte, 3)
+	n, _ := io.ReadFull(r, buf)
+	if n == 3 && buf[0] == 0xEF && buf[1] == 0xBB && buf[2] == 0xBF {
+		return r // BOM consumed
+	}
+	return io.MultiReader(bytes.NewReader(buf[:n]), r)
+}
+
 // NewEventStreamReader creates an instance of EventStreamReader.
 func NewEventStreamReader(eventStream io.Reader, maxBufferSize int) *EventStreamReader {
-	scanner := bufio.NewScanner(eventStream)
+	scanner := bufio.NewScanner(stripBOM(eventStream))
 	initBufferSize := minPosInt(4096, maxBufferSize)
 	scanner.Buffer(make([]byte, initBufferSize), maxBufferSize)
 
