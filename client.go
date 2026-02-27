@@ -67,6 +67,16 @@ type Client struct {
 	//	client.ReconnectStrategy = b
 	ReconnectStrategy backoff.BackOff
 
+	// Method is the HTTP method used for SSE requests. Defaults to GET when
+	// empty.
+	Method string
+
+	// Body is an optional factory function called before each request attempt
+	// (including reconnects) to produce a fresh io.Reader for the request body.
+	// A factory is used rather than a plain io.Reader so that reconnects always
+	// read the body from the start. If nil, no body is sent.
+	Body func() io.Reader
+
 	disconnectcb      ConnCallback
 	connectedcb       ConnCallback
 	subscribed        map[chan *Event]chan struct{}
@@ -410,7 +420,15 @@ func (c *Client) OnConnect(fn ConnCallback) {
 }
 
 func (c *Client) request(ctx context.Context, stream string) (*http.Response, error) {
-	req, err := http.NewRequest(http.MethodGet, c.URL, nil)
+	method := c.Method
+	if method == "" {
+		method = http.MethodGet
+	}
+	var body io.Reader
+	if c.Body != nil {
+		body = c.Body()
+	}
+	req, err := http.NewRequest(method, c.URL, body)
 	if err != nil {
 		return nil, fmt.Errorf("create request: %w", err)
 	}

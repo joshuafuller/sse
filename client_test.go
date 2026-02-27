@@ -22,6 +22,7 @@ import (
 	"runtime"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -1558,4 +1559,122 @@ func TestUnexpectedEOFDoesNotFireDisconnect(t *testing.T) {
 	case <-time.After(50 * time.Millisecond):
 		// good
 	}
+}
+
+// --- sse-x43: non-GET methods and request body ---
+
+// TestClientDefaultMethodIsGET verifies that a Client with no Method set sends
+// a GET request (preserving existing behaviour).
+func TestClientDefaultMethodIsGET(t *testing.T) {
+	var gotMethod string
+	tsrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotMethod = r.Method
+		w.Header().Set("Content-Type", "text/event-stream")
+		w.WriteHeader(http.StatusOK)
+		// Send one event then close.
+		_, _ = fmt.Fprint(w, "data: hello\n\n")
+	}))
+	defer tsrv.Close()
+
+	c := NewClient(tsrv.URL)
+	// Use a strategy that stops immediately after the first attempt.
+	b := backoff.NewExponentialBackOff()
+	b.MaxElapsedTime = 100 * time.Millisecond
+	c.ReconnectStrategy = b
+
+	_ = c.SubscribeRaw(func(msg *Event) {})
+
+	assert.Equal(t, http.MethodGet, gotMethod, "default method must be GET")
+}
+
+// TestClientPOSTWithBody verifies that setting Method and Body causes the
+// client to send a POST with the provided body.
+func TestClientPOSTWithBody(t *testing.T) {
+	var gotMethod string
+	var gotBody string
+	tsrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotMethod = r.Method
+		raw, _ := io.ReadAll(r.Body)
+		gotBody = string(raw)
+		w.Header().Set("Content-Type", "text/event-stream")
+		w.WriteHeader(http.StatusOK)
+		_, _ = fmt.Fprint(w, "data: hello\n\n")
+	}))
+	defer tsrv.Close()
+
+	const payload = `{"stream":"test"}`
+	c := NewClient(tsrv.URL)
+	c.Method = http.MethodPost
+	c.Body = func() io.Reader { return strings.NewReader(payload) }
+
+	b := backoff.NewExponentialBackOff()
+	b.MaxElapsedTime = 100 * time.Millisecond
+	c.ReconnectStrategy = b
+
+	_ = c.SubscribeRaw(func(msg *Event) {})
+
+	assert.Equal(t, http.MethodPost, gotMethod, "method must be POST")
+	assert.Equal(t, payload, gotBody, "request body must match payload")
+}
+
+// TestClientBodyFactoryCalledOnReconnect verifies that the Body factory is
+// called once per connection attempt (including reconnects), not just once.
+// The server returns 503 twice then 200 with a single event on the third
+// attempt; it returns 204 for all subsequent requests so the backoff loop
+// terminates cleanly. We check that callCount is exactly 3 after the 200.
+func TestClientBodyFactoryCalledOnReconnect(t *testing.T) {
+	var callCount int32
+	var reqCount int32
+
+	// eventReceived is closed when the handler receives the first event.
+	eventReceived := make(chan struct{})
+	var eventOnce sync.Once
+
+	tsrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		n := atomic.AddInt32(&reqCount, 1)
+		// Drain the body so the connection is not stalled.
+		_, _ = io.ReadAll(r.Body)
+		if n < 3 {
+			http.Error(w, "not yet", http.StatusServiceUnavailable)
+			return
+		}
+		if n == 3 {
+			// Third attempt: serve one SSE event then close.
+			w.Header().Set("Content-Type", "text/event-stream")
+			w.WriteHeader(http.StatusOK)
+			_, _ = fmt.Fprint(w, "data: hello\n\n")
+			return
+		}
+		// Fourth+ attempts: return 204 to permanently stop reconnecting.
+		w.WriteHeader(http.StatusNoContent)
+	}))
+	defer tsrv.Close()
+
+	c := NewClient(tsrv.URL)
+	c.Method = http.MethodPost
+	c.Body = func() io.Reader {
+		atomic.AddInt32(&callCount, 1)
+		return strings.NewReader(`{"stream":"test"}`)
+	}
+
+	// Use a fast backoff so the test doesn't take long.
+	b := backoff.NewExponentialBackOff()
+	b.InitialInterval = 5 * time.Millisecond
+	b.MaxInterval = 10 * time.Millisecond
+	b.MaxElapsedTime = 5 * time.Second
+	c.ReconnectStrategy = b
+
+	_ = c.SubscribeRaw(func(msg *Event) {
+		eventOnce.Do(func() { close(eventReceived) })
+	})
+
+	// Wait for the event to be received before checking callCount.
+	select {
+	case <-eventReceived:
+	case <-time.After(5 * time.Second):
+		t.Fatal("timed out waiting for event to be received")
+	}
+
+	got := atomic.LoadInt32(&callCount)
+	assert.GreaterOrEqual(t, got, int32(3), "Body factory must be called at least 3 times (once per attempt); got %d", got)
 }

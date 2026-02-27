@@ -225,11 +225,11 @@ Current compliance status as of 2026-02-26. Status definitions:
 | CL-004 | `Last-Event-ID` value must not contain NULL/LF/CR | UNTESTED | — |
 | CL-005 | Validate `Content-Type: text/event-stream` | COMPLIANT | sse-fk2 (fixed) |
 | CL-006 | HTTP 204 → fail permanently | COMPLIANT | sse-a67 (fixed) |
-| CL-007 | Non-200 (non-redirect) → fail connection | PARTIAL | sse-6v2 |
-| CL-008 | Announce connection on open | PARTIAL | sse-6v2 |
+| CL-007 | Non-200 (non-redirect) → fail connection | COMPLIANT | sse-6v2 (fixed) |
+| CL-008 | Announce connection on open | COMPLIANT | sse-6v2 (fixed) |
 | CL-009 | Network error → reestablish | COMPLIANT | — |
-| CL-010 | EOF → reestablish | NON-COMPLIANT | sse-fyk, sse-nsj |
-| CL-011 | Fire error callback before reconnect | PARTIAL | — |
+| CL-010 | EOF → reestablish | COMPLIANT | sse-fyk, sse-nsj (fixed) |
+| CL-011 | Fire error callback before reconnect | COMPLIANT | sse-fyk (fixed: ErrUnexpectedEOF silent, real errors fire disconnectcb) |
 | CL-012 | Initial reconnection time implementation-defined | COMPLIANT | — |
 | CL-013 | Exponential backoff on failure | COMPLIANT | — |
 | CL-014 | Last event ID persists across events | COMPLIANT | sse-2mm (fixed) |
@@ -253,14 +253,14 @@ Current compliance status as of 2026-02-26. Status definitions:
 | SV-015 | Requires `http.Flusher` support | COMPLIANT | — |
 | NF-001 | Stream operations goroutine-safe | COMPLIANT | sse-jsb (fixed) |
 | NF-002 | Subscriber add/remove no data races | PARTIAL | sse-svu |
-| NF-003 | Context cancel stops all goroutines | COMPLIANT | sse-1vw (fixed) |
+| NF-003 | Context cancel stops all goroutines | COMPLIANT | sse-1vw, sse-c6q (fixed: context propagated into readLoop) |
 | NF-004 | Unsubscribe does not deadlock | COMPLIANT | sse-vuw (fixed) |
 | NF-005 | Server Close() no goroutine leaks | PARTIAL | sse-svu |
 | NF-006 | EventLog bounded (max size / TTL) | PARTIAL | sse-eg7 (fixed MaxEntries), sse-bbt (TTL pending) |
 | NF-007 | Scanner buffer configurable max size | PARTIAL | sse-5xl |
 | NF-008 | Connection close releases all resources | PARTIAL | sse-svu |
 | NF-009 | Writer errors checked in ServeHTTP | COMPLIANT | sse-6lv (fixed) |
-| NF-010 | External errors wrapped with context | NON-COMPLIANT | sse-71z |
+| NF-010 | External errors wrapped with context | COMPLIANT | sse-71z (fixed: errors wrapped with %w) |
 | NF-011 | Scanner overflow surfaced (not silent) | COMPLIANT | sse-2e2 (fixed) |
 | NF-012 | Public API has test coverage | PARTIAL | — |
 | NF-013 | Tests are deterministic | COMPLIANT | sse-zfc (fixed, event-driven sync) |

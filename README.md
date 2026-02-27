@@ -22,6 +22,10 @@ All fixes are covered by regression tests and verified with the race detector.
 | **Server** | Empty-data events use `continue` instead of `break` — subscriber loop no longer terminates early | [#163](https://github.com/r3labs/sse/issues/163) |
 | **Server** | All `fmt.Fprintf` write errors in `ServeHTTP` are now checked; loop exits on client disconnect | — |
 | **Server** | `EventLog` bounded by configurable `MaxEntries`; previously grew unboundedly with `AutoReplay` | [#169](https://github.com/r3labs/sse/issues/169) |
+| **Server** | Per-stream `SetOnSubscribe`/`SetOnUnsubscribe` callbacks available on `*Stream` | [#138](https://github.com/r3labs/sse/issues/138) |
+| **Server** | `OnSubscribeHTTP` callback exposes `http.ResponseWriter` to send initial messages at connect time | [#177](https://github.com/r3labs/sse/issues/177) |
+| **Server** | `MaxSubscribers` field on `*Stream`; returns 429 when exceeded | [#172](https://github.com/r3labs/sse/issues/172) |
+| **Server** | `ServeHTTPWithFlusher` method for Fiber/fasthttp compatibility | [#139](https://github.com/r3labs/sse/issues/139) |
 | **Client** | EOF and server-close now trigger reconnect instead of treating stream end as success | [#76](https://github.com/r3labs/sse/issues/76) |
 | **Client** | HTTP 204 No Content causes permanent stop (no reconnect) | — |
 | **Client** | `Content-Type` validated on response; non-`text/event-stream` fails permanently | — |
@@ -35,6 +39,13 @@ All fixes are covered by regression tests and verified with the race detector.
 | **Parser** | Leading UTF-8 BOM stripped from event stream before parsing | — |
 | **Client** | `id:` field value containing U+0000 NULL ignored; `LastEventID` unchanged | — |
 | **Testing** | `TestSubscribeWithContextDone` rewritten with event-driven sync; no more timing-based flakiness | [#186](https://github.com/r3labs/sse/issues/186) |
+| **Client** | `OnConnect` callback fires immediately after HTTP 200 response instead of on first event | [#149](https://github.com/r3labs/sse/issues/149) |
+| **Client** | `io.ErrUnexpectedEOF` (keepalive timeout) triggers silent reconnect; `disconnectcb` not called spuriously | — |
+| **Client** | Non-200 responses return `*StreamError` with `StatusCode` and `Body` fields; inspectable via `errors.As` | [#168](https://github.com/r3labs/sse/issues/168) |
+| **Client** | Backoff resets after each successful connection; next reconnect starts from minimum delay | — |
+| **Client** | Context passed into `startReadLoop`; goroutine exits promptly on context cancel | — |
+| **Client** | External errors wrapped with `%w` for `errors.Is`/`errors.As` compatibility | — |
+| **Client** | `Method` and `Body` fields added; supports POST and any HTTP method with a per-attempt body factory | [#153](https://github.com/r3labs/sse/issues/153) |
 
 ## Migrating from r3labs/sse
 
