@@ -995,7 +995,7 @@ func TestClientCommentLinesIgnored(t *testing.T) {
 	// event. Only the data event must reach the handler.
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "text/event-stream")
-		w.Header().Set("Cache-Control", "no-store")
+		w.Header().Set("Cache-Control", "no-cache")
 		w.WriteHeader(http.StatusOK)
 		// Comment-only block — must not be dispatched.
 		_, _ = fmt.Fprintln(w, ": this is a comment")

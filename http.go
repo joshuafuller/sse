@@ -48,7 +48,9 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 // The flusher parameter must not be nil.
 func (s *Server) ServeHTTPWithFlusher(w http.ResponseWriter, r *http.Request, flusher http.Flusher) {
 	w.Header().Set("Content-Type", "text/event-stream")
-	w.Header().Set("Cache-Control", "no-store")
+	// WHATWG SSE spec §9.2.1: use no-cache so intermediaries do not buffer
+	// the stream.  no-store is stricter but not what the spec recommends.
+	w.Header().Set("Cache-Control", "no-cache")
 	w.Header().Set("Connection", "keep-alive")
 
 	for k, v := range s.Headers {
