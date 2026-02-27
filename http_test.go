@@ -935,3 +935,101 @@ func TestOnSubscribeHTTP(t *testing.T) {
 		t.Fatal("timed out waiting for OnSubscribeHTTP initial event")
 	}
 }
+
+// TestServerCloseCancelsActiveSubscribers verifies that calling Server.Close()
+// closes all active subscriber connection channels, causing ServeHTTP to return
+// and the client HTTP connection to end. This covers upstream r3labs/sse #93.
+func TestServerCloseCancelsActiveSubscribers(t *testing.T) {
+	t.Parallel()
+
+	s := sse.New()
+	s.AutoReplay = false
+
+	mux := http.NewServeMux()
+	mux.HandleFunc("/events", s.ServeHTTP)
+	server := httptest.NewServer(mux)
+	defer server.Close()
+
+	stream := s.CreateStream("shutdown-test")
+
+	// Open a raw SSE connection and block until we get the 200 header.
+	resp, err := http.Get(server.URL + "/events?stream=shutdown-test")
+	require.NoError(t, err)
+	defer resp.Body.Close()
+	require.Equal(t, http.StatusOK, resp.StatusCode)
+
+	// Verify the subscriber registered before we close.
+	require.Eventually(t, func() bool {
+		return stream.SubscriberCount() == 1
+	}, 2*time.Second, 10*time.Millisecond, "subscriber did not register")
+
+	// Closing the SSE server must unblock the read on the response body by
+	// closing the subscriber's connection channel (removeAllSubscribers).
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		buf := make([]byte, 1)
+		// Read blocks until the server closes the subscriber channel, which
+		// causes ServeHTTP to return and the HTTP body to be closed.
+		_, _ = resp.Body.Read(buf)
+	}()
+
+	s.Close()
+
+	select {
+	case <-done:
+		// ServeHTTP returned and body was closed — subscriber was cancelled.
+	case <-time.After(2 * time.Second):
+		t.Fatal("Server.Close() did not terminate the active subscriber connection")
+	}
+}
+
+// TestClientCommentLinesIgnored verifies that SSE comment lines (lines starting
+// with ':') are silently ignored by the client and never delivered to the
+// handler. Per WHATWG SSE §9.2.6, a line beginning with ':' is a comment and
+// must not affect the event buffer.
+func TestClientCommentLinesIgnored(t *testing.T) {
+	t.Parallel()
+
+	// The server sends a comment-only "event" block followed by a real data
+	// event. Only the data event must reach the handler.
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		w.Header().Set("Cache-Control", "no-store")
+		w.WriteHeader(http.StatusOK)
+		// Comment-only block — must not be dispatched.
+		_, _ = fmt.Fprintln(w, ": this is a comment")
+		_, _ = fmt.Fprintln(w)
+		// Real data event.
+		_, _ = fmt.Fprintln(w, "data: real")
+		_, _ = fmt.Fprintln(w)
+		w.(http.Flusher).Flush()
+		<-r.Context().Done()
+	}))
+	defer srv.Close()
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	c := sse.NewClient(srv.URL)
+	c.ReconnectStrategy = backoff.NewConstantBackOff(50 * time.Millisecond)
+
+	received := make(chan *sse.Event, 8)
+	go func() {
+		_ = c.SubscribeChanRawWithContext(ctx, received)
+	}()
+
+	select {
+	case ev := <-received:
+		assert.Equal(t, []byte("real"), ev.Data, "only the data event should be delivered")
+		// Confirm no extra events are buffered (the comment-only block must not have produced one).
+		select {
+		case extra := <-received:
+			t.Fatalf("unexpected extra event delivered: %v", extra)
+		case <-time.After(100 * time.Millisecond):
+			// No extra event — correct.
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("timed out waiting for data event")
+	}
+}
