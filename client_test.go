@@ -212,20 +212,33 @@ func TestClientChanSubscribe(t *testing.T) {
 }
 
 func TestClientOnDisconnect(t *testing.T) {
-	// OnDisconnect fires when a real network-level error occurs (not on EOF
-	// or ErrUnexpectedEOF which trigger silent reconnects per sse-fyk).
+	// OnDisconnect fires when readLoop encounters a non-EOF, non-ErrUnexpectedEOF
+	// error (sse-fyk: EOF and ErrUnexpectedEOF now trigger silent reconnects).
 	//
-	// After the initial connection is established, we cancel the client
-	// context so it stops reconnecting, then close the server. This
-	// produces a real dial error on the final reconnect attempt, which
-	// fires disconnectcb.
-	//
-	// Implementation: run server.Close in a goroutine (it may block waiting
-	// for connections to drain) and wait for the called channel in parallel.
-	setup(false)
-	defer cleanup()
+	// Trigger bufio.ErrTooLong by sending an event whose data line exceeds
+	// the client's max buffer size. This causes the scanner to return a real
+	// error (not EOF), which fires disconnectcb.
+	smallBuf := 64
+	bigData := strings.Repeat("x", smallBuf*2) // guaranteed > buffer
 
-	c := NewClient(urlPath)
+	tsrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		w.Header().Set("Cache-Control", "no-cache")
+		w.WriteHeader(http.StatusOK)
+		w.(http.Flusher).Flush()
+		// Send a normal event first so we know the connection is up.
+		fmt.Fprint(w, "data: hello\n\n")
+		w.(http.Flusher).Flush()
+		// Send an oversized event to trigger ErrTooLong.
+		fmt.Fprintf(w, "data: %s\n\n", bigData)
+		w.(http.Flusher).Flush()
+		<-r.Context().Done()
+	}))
+	defer tsrv.Close()
+
+	c := NewClient(tsrv.URL, ClientMaxBufferSize(smallBuf))
+	// Stop after one attempt so we don't loop forever.
+	c.ReconnectStrategy = backoff.WithMaxRetries(backoff.NewExponentialBackOff(), 0)
 
 	called := make(chan struct{}, 1)
 	c.OnDisconnect(func(client *Client) {
@@ -235,20 +248,13 @@ func TestClientOnDisconnect(t *testing.T) {
 		}
 	})
 
-	go c.Subscribe("test", func(msg *Event) {})
-
-	// Wait for the subscription to be established.
-	time.Sleep(time.Second)
-
-	// Close the server in the background; this unblocks once all connections
-	// drain (which will happen when disconnectcb fires and the client stops).
-	go server.Close()
+	go c.SubscribeRaw(func(msg *Event) {})
 
 	select {
 	case <-called:
-		// good — disconnectcb fired when reconnect hit the closed server
-	case <-time.After(10 * time.Second):
-		t.Fatal("OnDisconnect callback was not called within 10 seconds after server shutdown")
+		// good — disconnectcb fired on ErrTooLong
+	case <-time.After(5 * time.Second):
+		t.Fatal("OnDisconnect callback was not called within 5 seconds")
 	}
 }
 
