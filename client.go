@@ -28,6 +28,17 @@ var (
 	headerRetry = []byte("retry:")
 )
 
+// StreamError is returned when the server responds with a non-200 HTTP status.
+// Callers can inspect the status code and raw body via errors.As.
+type StreamError struct {
+	StatusCode int
+	Body       []byte // first 512 bytes of the response body
+}
+
+func (e *StreamError) Error() string {
+	return fmt.Sprintf("could not connect to stream: %s", http.StatusText(e.StatusCode))
+}
+
 func ClientMaxBufferSize(s int) func(c *Client) {
 	return func(c *Client) {
 		c.maxBufferSize = s
@@ -42,8 +53,20 @@ type ResponseValidator func(c *Client, resp *http.Response) error
 
 // Client handles an incoming server stream
 type Client struct {
-	Retry             time.Time
+	Retry time.Time
+
+	// ReconnectStrategy controls how the client retries failed or dropped
+	// connections. If nil, a default backoff.NewExponentialBackOff() is used,
+	// which retries with exponential delay but stops permanently after 15
+	// minutes (MaxElapsedTime = 15 * time.Minute).
+	//
+	// To retry indefinitely, set an explicit strategy with MaxElapsedTime = 0:
+	//
+	//	b := backoff.NewExponentialBackOff()
+	//	b.MaxElapsedTime = 0 // 0 means no time limit
+	//	client.ReconnectStrategy = b
 	ReconnectStrategy backoff.BackOff
+
 	disconnectcb      ConnCallback
 	connectedcb       ConnCallback
 	subscribed        map[chan *Event]chan struct{}
@@ -77,12 +100,23 @@ func NewClient(url string, opts ...func(c *Client)) *Client {
 	return c
 }
 
-// Subscribe to a data stream
+// Subscribe connects to a named SSE stream and calls handler for each event.
+// It blocks until the server stops retrying (see ReconnectStrategy).
+// By default, reconnection uses backoff.NewExponentialBackOff() which stops
+// after 15 minutes; set ReconnectStrategy with MaxElapsedTime = 0 to retry
+// indefinitely.
 func (c *Client) Subscribe(stream string, handler func(msg *Event)) error {
 	return c.SubscribeWithContext(context.Background(), stream, handler)
 }
 
-// SubscribeWithContext to a data stream with context
+// SubscribeWithContext connects to a named SSE stream and calls handler for
+// each received event. It blocks until ctx is cancelled, the server sends HTTP
+// 204, or the reconnect strategy gives up.
+//
+// Reconnect behaviour: on any connection error or EOF the client waits
+// according to ReconnectStrategy before reconnecting. If ReconnectStrategy is
+// nil a default backoff.NewExponentialBackOff() is used, which stops after 15
+// minutes. Cancelling ctx always terminates the subscription immediately.
 func (c *Client) SubscribeWithContext(ctx context.Context, stream string, handler func(msg *Event)) error {
 	// Apply user specified reconnection strategy or default to standard NewExponentialBackOff() reconnection method.
 	// Wrap with context so cancellation stops the retry loop.
@@ -116,13 +150,20 @@ func (c *Client) SubscribeWithContext(ctx context.Context, stream string, handle
 				return backoff.Permanent(fmt.Errorf("server returned 204 No Content: reconnection disabled"))
 			}
 			if resp.StatusCode != http.StatusOK {
-				return fmt.Errorf("could not connect to stream: %s", http.StatusText(resp.StatusCode))
+				body := make([]byte, 512)
+				n, _ := io.ReadFull(resp.Body, body)
+				return fmt.Errorf("%w", &StreamError{StatusCode: resp.StatusCode, Body: body[:n]})
 			}
 			ct := resp.Header.Get("Content-Type")
 			mediaType, _, _ := mime.ParseMediaType(ct)
 			if mediaType != "text/event-stream" {
 				return backoff.Permanent(fmt.Errorf("invalid content-type %q: expected text/event-stream", ct))
 			}
+		}
+
+		if !c.Connected && c.connectedcb != nil {
+			c.Connected = true
+			c.connectedcb(c)
 		}
 
 		b.Reset()
@@ -189,13 +230,20 @@ func (c *Client) SubscribeChanWithContext(ctx context.Context, stream string, ch
 					return backoff.Permanent(fmt.Errorf("server returned 204 No Content: reconnection disabled"))
 				}
 				if resp.StatusCode != http.StatusOK {
-					return fmt.Errorf("could not connect to stream: %s", http.StatusText(resp.StatusCode))
+					body := make([]byte, 512)
+					n, _ := io.ReadFull(resp.Body, body)
+					return fmt.Errorf("%w", &StreamError{StatusCode: resp.StatusCode, Body: body[:n]})
 				}
 				ct := resp.Header.Get("Content-Type")
 				mediaType, _, _ := mime.ParseMediaType(ct)
 				if mediaType != "text/event-stream" {
 					return backoff.Permanent(fmt.Errorf("invalid content-type %q: expected text/event-stream", ct))
 				}
+			}
+
+			if !c.Connected && c.connectedcb != nil {
+				c.Connected = true
+				c.connectedcb(c)
 			}
 
 			if !connected {
@@ -263,8 +311,11 @@ func (c *Client) readLoop(ctx context.Context, reader *EventStreamReader, outCh 
 		// Read each new line and process the type of event
 		event, err := reader.ReadEvent()
 		if err != nil {
-			if err == io.EOF {
-				erChan <- io.EOF
+			if err == io.EOF || err == io.ErrUnexpectedEOF {
+				// EOF and ErrUnexpectedEOF both trigger a silent reconnect via
+				// backoff. Do not fire disconnectcb — a transient keepalive
+				// timeout is not a real disconnect.
+				erChan <- err
 				return
 			}
 			// run user specified disconnect function
@@ -274,11 +325,6 @@ func (c *Client) readLoop(ctx context.Context, reader *EventStreamReader, outCh 
 			}
 			erChan <- err
 			return
-		}
-
-		if !c.Connected && c.connectedcb != nil {
-			c.Connected = true
-			c.connectedcb(c)
 		}
 
 		// If we get an error, ignore it.
