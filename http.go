@@ -83,7 +83,9 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		}
 
 		if len(ev.Data) > 0 {
-			fmt.Fprintf(w, "id: %s\n", ev.ID)
+			if len(ev.ID) > 0 {
+				fmt.Fprintf(w, "id: %s\n", ev.ID)
+			}
 
 			if s.SplitData {
 				sd := bytes.Split(ev.Data, []byte("\n"))

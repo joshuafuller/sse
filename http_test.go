@@ -284,6 +284,100 @@ func TestHTTPStreamHandlerEmptyEventDoesNotBreakLoop(t *testing.T) {
 	}
 }
 
+func TestHTTPServerOmitsIDFieldWhenEmpty(t *testing.T) {
+	s := New()
+	defer s.Close()
+
+	s.AutoReplay = false
+
+	stream := s.CreateStream("test")
+
+	mux := http.NewServeMux()
+	mux.HandleFunc("/events", s.ServeHTTP)
+	server := httptest.NewServer(mux)
+	defer server.Close()
+
+	resp, err := http.Get(server.URL + "/events?stream=test")
+	require.NoError(t, err)
+	defer resp.Body.Close()
+	require.Equal(t, http.StatusOK, resp.StatusCode)
+
+	// Wait for subscriber to register
+	for i := 0; i < 50; i++ {
+		if stream.getSubscriberCount() > 0 {
+			break
+		}
+		time.Sleep(time.Millisecond * 10)
+	}
+	require.Greater(t, stream.getSubscriberCount(), 0, "subscriber should be registered")
+
+	// Publish an event with data but NO ID
+	s.Publish("test", &Event{Data: []byte("hello")})
+
+	done := make(chan []byte, 1)
+	go func() {
+		buf := make([]byte, 4096)
+		n, _ := resp.Body.Read(buf)
+		done <- buf[:n]
+	}()
+
+	select {
+	case data := <-done:
+		body := string(data)
+		assert.Contains(t, body, "data: hello", "should contain the data field")
+		assert.NotContains(t, body, "id:", "id: field must NOT be emitted when event has no ID")
+	case <-time.After(2 * time.Second):
+		t.Fatal("timed out waiting for event")
+	}
+}
+
+func TestHTTPServerEmitsIDFieldWhenPresent(t *testing.T) {
+	s := New()
+	defer s.Close()
+
+	s.AutoReplay = false
+
+	stream := s.CreateStream("test")
+
+	mux := http.NewServeMux()
+	mux.HandleFunc("/events", s.ServeHTTP)
+	server := httptest.NewServer(mux)
+	defer server.Close()
+
+	resp, err := http.Get(server.URL + "/events?stream=test")
+	require.NoError(t, err)
+	defer resp.Body.Close()
+	require.Equal(t, http.StatusOK, resp.StatusCode)
+
+	// Wait for subscriber to register
+	for i := 0; i < 50; i++ {
+		if stream.getSubscriberCount() > 0 {
+			break
+		}
+		time.Sleep(time.Millisecond * 10)
+	}
+	require.Greater(t, stream.getSubscriberCount(), 0, "subscriber should be registered")
+
+	// Publish an event WITH an ID
+	s.Publish("test", &Event{Data: []byte("hello"), ID: []byte("evt-42")})
+
+	done := make(chan []byte, 1)
+	go func() {
+		buf := make([]byte, 4096)
+		n, _ := resp.Body.Read(buf)
+		done <- buf[:n]
+	}()
+
+	select {
+	case data := <-done:
+		body := string(data)
+		assert.Contains(t, body, "data: hello", "should contain the data field")
+		assert.Contains(t, body, "id: evt-42", "id: field must be emitted when event has an ID")
+	case <-time.After(2 * time.Second):
+		t.Fatal("timed out waiting for event")
+	}
+}
+
 func TestHTTPStreamHandlerAutoStream(t *testing.T) {
 	t.Parallel()
 
