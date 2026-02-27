@@ -210,11 +210,11 @@ Current compliance status as of 2026-02-26. Status definitions:
 | WP-010 | Field names compared literally | COMPLIANT | — |
 | WP-011 | Unknown fields ignored | COMPLIANT | — |
 | WP-012 | `event` field sets type buffer | COMPLIANT | — |
-| WP-013 | `data` field appends + LF (bare `data` case) | PARTIAL | sse-pc8 |
+| WP-013 | `data` field appends + LF (bare `data` case) | COMPLIANT | sse-pc8 (fixed) |
 | WP-014 | `id` containing NULL ignored; buffer unchanged | NON-COMPLIANT | sse-coz |
 | WP-015 | `retry` only applied if all-digit | UNTESTED | sse-3we |
 | WP-016 | Last event ID buffer persists across events | NON-COMPLIANT | sse-2mm |
-| WP-017 | Empty data buffer → no dispatch | NON-COMPLIANT | sse-pc8 |
+| WP-017 | Empty data buffer → no dispatch | COMPLIANT | sse-pc8 (fixed) |
 | WP-018 | Strip trailing LF from data on dispatch | COMPLIANT | — |
 | WP-019 | Default event type is `"message"` | COMPLIANT | — |
 | WP-020 | Reset data/event buffers after dispatch | COMPLIANT | — |
@@ -225,7 +225,7 @@ Current compliance status as of 2026-02-26. Status definitions:
 | CL-004 | `Last-Event-ID` value must not contain NULL/LF/CR | UNTESTED | — |
 | CL-005 | Validate `Content-Type: text/event-stream` | NON-COMPLIANT | sse-fk2 |
 | CL-006 | HTTP 204 → fail permanently | COMPLIANT | sse-a67 (fixed) |
-| CL-007 | Non-200 (non-redirect) → fail connection | PARTIAL | sse-2et |
+| CL-007 | Non-200 (non-redirect) → fail connection | PARTIAL | sse-6v2 |
 | CL-008 | Announce connection on open | PARTIAL | sse-6v2 |
 | CL-009 | Network error → reestablish | COMPLIANT | — |
 | CL-010 | EOF → reestablish | NON-COMPLIANT | sse-fyk, sse-nsj |
@@ -247,21 +247,21 @@ Current compliance status as of 2026-02-26. Status definitions:
 | SV-009 | Comment/keepalive line format | COMPLIANT | — |
 | SV-010 | Send keepalive comment ~every 15s | N/A | — |
 | SV-011 | `retry:` contains only ASCII digits | UNTESTED | — |
-| SV-012 | `Last-Event-ID` treated as opaque string (not numeric) | NON-COMPLIANT | sse-2et |
+| SV-012 | `Last-Event-ID` treated as opaque string (not numeric) | COMPLIANT | sse-2et (fixed) |
 | SV-013 | HTTP 204 to stop reconnecting | N/A | — |
-| SV-014 | Unknown stream → 4xx not 5xx | NON-COMPLIANT | sse-2et |
+| SV-014 | Unknown stream → 4xx not 5xx | COMPLIANT | sse-2et (fixed) |
 | SV-015 | Requires `http.Flusher` support | COMPLIANT | — |
-| NF-001 | Stream operations goroutine-safe | PARTIAL | sse-jsb |
+| NF-001 | Stream operations goroutine-safe | COMPLIANT | sse-jsb (fixed) |
 | NF-002 | Subscriber add/remove no data races | PARTIAL | sse-svu |
-| NF-003 | Context cancel stops all goroutines | NON-COMPLIANT | sse-1vw |
+| NF-003 | Context cancel stops all goroutines | COMPLIANT | sse-1vw (fixed) |
 | NF-004 | Unsubscribe does not deadlock | COMPLIANT | sse-vuw (fixed) |
 | NF-005 | Server Close() no goroutine leaks | PARTIAL | sse-svu |
-| NF-006 | EventLog bounded (max size / TTL) | NON-COMPLIANT | sse-eg7, sse-bbt |
-| NF-007 | Scanner buffer configurable max size | PARTIAL | sse-2e2, sse-5xl |
+| NF-006 | EventLog bounded (max size / TTL) | PARTIAL | sse-eg7 (fixed MaxEntries), sse-bbt (TTL pending) |
+| NF-007 | Scanner buffer configurable max size | PARTIAL | sse-5xl |
 | NF-008 | Connection close releases all resources | PARTIAL | sse-svu |
 | NF-009 | Writer errors checked in ServeHTTP | NON-COMPLIANT | sse-6lv |
 | NF-010 | External errors wrapped with context | NON-COMPLIANT | sse-71z |
-| NF-011 | Scanner overflow surfaced (not silent) | NON-COMPLIANT | sse-2e2 |
+| NF-011 | Scanner overflow surfaced (not silent) | COMPLIANT | sse-2e2 (fixed) |
 | NF-012 | Public API has test coverage | PARTIAL | — |
 | NF-013 | Tests are deterministic | NON-COMPLIANT | sse-zfc |
 | NF-014 | Tests in external package (`sse_test`) | NON-COMPLIANT | sse-4pn |
