@@ -41,8 +41,17 @@ func (e *EventLog) Clear() {
 // The send is non-blocking: if the subscriber's channel is full the event is
 // skipped rather than stalling the stream's run() goroutine (sse-xua).
 func (e *EventLog) Replay(s *Subscriber) {
+	if e == nil {
+		return
+	}
 	for i := 0; i < len(e.entries); i++ {
-		id, _ := strconv.Atoi(string(e.entries[i].ID))
+		if e.entries[i] == nil {
+			continue
+		}
+		id, err := strconv.Atoi(string(e.entries[i].ID))
+		if err != nil {
+			continue
+		}
 		if id >= s.eventid {
 			select {
 			case s.connection <- e.entries[i]:

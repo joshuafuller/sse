@@ -36,3 +36,16 @@ func TestEventLogMaxEntries(t *testing.T) {
 
 	assert.Equal(t, 5, ev.Len())
 }
+
+// TestReplayNilEventLog verifies sse-45h: a nil *EventLog receiver must not
+// panic when Replay is called. The nil guard must return immediately.
+func TestReplayNilEventLog(t *testing.T) {
+	var el *sse.EventLog
+	// We need a minimal *Subscriber with a non-nil connection channel so that
+	// the function can proceed past the nil-receiver check without panicking on
+	// an unrelated nil dereference.
+	sub := &sse.Subscriber{}
+	assert.NotPanics(t, func() {
+		el.Replay(sub)
+	})
+}
