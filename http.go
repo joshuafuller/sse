@@ -12,6 +12,27 @@ import (
 	"time"
 )
 
+// errWriter wraps an http.ResponseWriter and tracks the first write error.
+// After any write fails, subsequent writes are no-ops.
+type errWriter struct {
+	w   http.ResponseWriter
+	err error
+}
+
+func (ew *errWriter) printf(format string, args ...any) {
+	if ew.err != nil {
+		return
+	}
+	_, ew.err = fmt.Fprintf(ew.w, format, args...)
+}
+
+func (ew *errWriter) print(s string) {
+	if ew.err != nil {
+		return
+	}
+	_, ew.err = fmt.Fprint(ew.w, s)
+}
+
 // ServeHTTP serves new connections with events for a given stream ...
 func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	flusher, err := w.(http.Flusher)
@@ -71,6 +92,8 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	flusher.Flush()
 
 	// Push events to client
+	ew := &errWriter{w: w}
+
 	for ev := range sub.connection {
 		// If the data buffer is an empty string, skip this event.
 		if len(ev.Data) == 0 && len(ev.Comment) == 0 {
@@ -84,37 +107,41 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 
 		if len(ev.Data) > 0 {
 			if len(ev.ID) > 0 {
-				fmt.Fprintf(w, "id: %s\n", ev.ID)
+				ew.printf("id: %s\n", ev.ID)
 			}
 
 			if s.SplitData {
 				sd := bytes.Split(ev.Data, []byte("\n"))
 				for i := range sd {
-					fmt.Fprintf(w, "data: %s\n", sd[i])
+					ew.printf("data: %s\n", sd[i])
 				}
 			} else {
 				if bytes.HasPrefix(ev.Data, []byte(":")) {
-					fmt.Fprintf(w, "%s\n", ev.Data)
+					ew.printf("%s\n", ev.Data)
 				} else {
-					fmt.Fprintf(w, "data: %s\n", ev.Data)
+					ew.printf("data: %s\n", ev.Data)
 				}
 			}
 
 			if len(ev.Event) > 0 {
-				fmt.Fprintf(w, "event: %s\n", ev.Event)
+				ew.printf("event: %s\n", ev.Event)
 			}
 
 			if len(ev.Retry) > 0 {
-				fmt.Fprintf(w, "retry: %s\n", ev.Retry)
+				ew.printf("retry: %s\n", ev.Retry)
 			}
 		}
 
 		if len(ev.Comment) > 0 {
-			fmt.Fprintf(w, ": %s\n", ev.Comment)
+			ew.printf(": %s\n", ev.Comment)
 		}
 
-		fmt.Fprint(w, "\n")
+		ew.print("\n")
 
 		flusher.Flush()
+
+		if ew.err != nil {
+			break
+		}
 	}
 }
