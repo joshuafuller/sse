@@ -52,3 +52,151 @@ rules:
       This preserves the error chain for errors.Is / errors.As.
     languages: [go]
     severity: ERROR
+
+  # ── Mutex-safety rules ──────────────────────────────────────────────────────
+  #
+  # These rules were derived from a full audit of client.go, server.go,
+  # stream.go, subscriber.go, http.go, event.go, and event_log.go.
+  #
+  # Key findings that motivated these rules:
+  #
+  # 1. c.Connected (plain bool) was read/written without synchronisation from
+  #    multiple goroutines (SubscribeWithContext, SubscribeChanWithContext,
+  #    readLoop). Fixed by converting to atomic.Bool.
+  #
+  # 2. The patterns below are potential lock-safety hazards that would introduce
+  #    bugs in future changes.  No current production bug exists for rules 2-4,
+  #    but the rules enforce forward-safe patterns.
+  #
+  # Design notes:
+  #   - Short critical sections (Lock + 1-2 stmts + Unlock, no return between
+  #     them) are intentionally NOT deferred and must NOT be flagged.
+  #   - The pattern-not clauses below exclude exactly these safe patterns.
+  #   - Rules are excluded from test files to avoid noise on test helpers.
+
+  # Rule M1: Lock() with early return but no defer Unlock().
+  # An early return inside the locked region leaves the mutex permanently locked.
+  # Safe patterns excluded:
+  #   (a) Lock + defer Unlock (the standard safe pattern)
+  #   (b) Lock + ... + Unlock + ... + return (unlock before return is fine)
+  - id: lock-without-defer
+    patterns:
+      - pattern: |
+          $MU.Lock()
+          ...
+          return $X
+      - pattern-not: |
+          $MU.Lock()
+          defer $MU.Unlock()
+          ...
+          return $X
+      - pattern-not: |
+          $MU.Lock()
+          ...
+          $MU.Unlock()
+          ...
+          return $X
+    message: >
+      Lock() called without an immediate defer Unlock() and the function has
+      a return statement. An early return before the matching Unlock() will
+      leave the mutex permanently locked.
+      Fix: add 'defer $MU.Unlock()' immediately after the Lock() call, or
+      ensure every return path is preceded by an explicit Unlock().
+    languages: [go]
+    severity: ERROR
+    paths:
+      exclude:
+        - "*_test.go"
+
+  # Rule M2: RLock() with early return but no defer RUnlock().
+  # Same hazard as M1 but for read-locks.
+  - id: rwmutex-rlock-without-defer
+    patterns:
+      - pattern: |
+          $MU.RLock()
+          ...
+          return $X
+      - pattern-not: |
+          $MU.RLock()
+          defer $MU.RUnlock()
+          ...
+          return $X
+      - pattern-not: |
+          $MU.RLock()
+          ...
+          $MU.RUnlock()
+          ...
+          return $X
+    message: >
+      RLock() called without an immediate defer RUnlock() and the function
+      has a return statement. An early return before the matching RUnlock()
+      will leave the read-lock permanently held, blocking all writers.
+      Fix: add 'defer $MU.RUnlock()' immediately after the RLock() call.
+    languages: [go]
+    severity: ERROR
+    paths:
+      exclude:
+        - "*_test.go"
+
+  # Rule M3: Channel send between manual Lock/Unlock (not deferred).
+  # If the goroutine reading from the channel also needs this lock, it deadlocks.
+  # Real example: Unsubscribe() in client.go holds c.mu while sending to a
+  # buffered channel; safe because it uses select-with-default, but a blocking
+  # send would deadlock.
+  - id: channel-send-while-locked
+    patterns:
+      - pattern: |
+          $MU.Lock()
+          ...
+          $CH <- $VAL
+          ...
+          $MU.Unlock()
+      - pattern-not: |
+          $MU.Lock()
+          defer $MU.Unlock()
+          ...
+          $CH <- $VAL
+    message: >
+      Channel send ('$CH <- $VAL') occurs between a manual Lock() and
+      Unlock() (not deferred). If the goroutine reading from $CH also tries
+      to acquire the same lock, this will deadlock.
+      Fix: release the lock before the send, or ensure the send is
+      non-blocking (select with default).
+    languages: [go]
+    severity: ERROR
+    paths:
+      exclude:
+        - "*_test.go"
+
+  # Rule M4: Goroutine spawned between manual Lock/Unlock (not deferred).
+  # If the spawned goroutine acquires the same lock it will deadlock immediately
+  # because the parent still holds it until Unlock() is reached.
+  - id: goroutine-spawned-while-locked
+    patterns:
+      - pattern: |
+          $MU.Lock()
+          ...
+          go $FUNC(...)
+          ...
+          $MU.Unlock()
+      - pattern-not: |
+          $MU.Lock()
+          defer $MU.Unlock()
+          ...
+          go $FUNC(...)
+      - pattern-not: |
+          $MU.Lock()
+          ...
+          $MU.Unlock()
+          ...
+          go $FUNC(...)
+    message: >
+      Goroutine spawned ('go $FUNC(...)') between a manual Lock() and
+      Unlock() (not deferred). If the goroutine acquires the same lock it
+      will deadlock immediately.
+      Fix: move the 'go' statement after Unlock(), or use defer.
+    languages: [go]
+    severity: ERROR
+    paths:
+      exclude:
+        - "*_test.go"
