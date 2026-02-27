@@ -11,9 +11,28 @@ r3labs authors for the foundational work.
 
 ## Changes from Upstream
 
+All fixes are covered by regression tests and verified with the race detector.
+
 | Area | Change | Upstream Issue |
-|------|--------|---------------|
-| — | More to come as issues are resolved | — |
+|------|--------|----------------|
+| **Server** | Non-blocking fan-out dispatch — slow subscribers no longer stall the entire stream | — |
+| **Server** | `id:` field omitted when event has no ID; previously always emitted, corrupting client LastEventID | — |
+| **Server** | Missing stream with `AutoStream=false` returns HTTP 404 instead of 500 | [#33](https://github.com/r3labs/sse/issues/33) |
+| **Server** | `Last-Event-ID` request header accepted as opaque string; previously rejected non-numeric values with 400 | [#33](https://github.com/r3labs/sse/issues/33) |
+| **Server** | Empty-data events use `continue` instead of `break` — subscriber loop no longer terminates early | [#163](https://github.com/r3labs/sse/issues/163) |
+| **Server** | All `fmt.Fprintf` write errors in `ServeHTTP` are now checked; loop exits on client disconnect | — |
+| **Server** | `EventLog` bounded by configurable `MaxEntries`; previously grew unboundedly with `AutoReplay` | [#169](https://github.com/r3labs/sse/issues/169) |
+| **Client** | EOF and server-close now trigger reconnect instead of treating stream end as success | [#76](https://github.com/r3labs/sse/issues/76) |
+| **Client** | HTTP 204 No Content causes permanent stop (no reconnect) | — |
+| **Client** | `Content-Type` validated on response; non-`text/event-stream` fails permanently | — |
+| **Client** | `retry:` field value applied as reconnect delay in milliseconds | — |
+| **Client** | `id:` with empty value correctly resets `LastEventID` (vs. absent `id:` which preserves it) | — |
+| **Client** | `id:` field value containing U+0000 NULL is ignored per spec | — |
+| **Client** | `SubscribeWithContext` returns `context.Canceled` when context is cancelled | [#131](https://github.com/r3labs/sse/issues/131) |
+| **Client** | `erChan` buffered (`size=1`) — `readLoop` goroutine no longer leaks when consumer exits early | — |
+| **Client** | Scanner buffer overflow returns `bufio.ErrTooLong` instead of `io.EOF` | [#158](https://github.com/r3labs/sse/issues/158) |
+| **Client** | ID-only events (no `data:`) not dispatched to handler per WHATWG spec | [#163](https://github.com/r3labs/sse/issues/163) |
+| **Parser** | Leading UTF-8 BOM stripped from event stream before parsing | — |
 
 ## Migrating from r3labs/sse
 
