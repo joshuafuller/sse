@@ -16,9 +16,7 @@ jobs:
       - name: Set up Go
         uses: actions/setup-go@v5
         with:
-          # go.mod requires 1.25.0 which actions/setup-go does not yet recognise;
-          # 'stable' resolves to the latest stable release (currently 1.24.x).
-          go-version: stable
+          go-version: '1.24'
 
       - name: golangci-lint
         uses: golangci/golangci-lint-action@v6

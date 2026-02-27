@@ -1,6 +1,6 @@
 module github.com/joshuafuller/sse/v3
 
-go 1.25.0
+go 1.24
 
 require (
 	github.com/cenkalti/backoff/v4 v4.3.0
