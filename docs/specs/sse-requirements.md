@@ -218,7 +218,7 @@ Current compliance status as of 2026-02-26. Status definitions:
 | WP-018 | Strip trailing LF from data on dispatch | COMPLIANT | — |
 | WP-019 | Default event type is `"message"` | COMPLIANT | — |
 | WP-020 | Reset data/event buffers after dispatch | COMPLIANT | — |
-| WP-021 | Incomplete event at EOF discarded | PARTIAL | sse-fyk |
+| WP-021 | Incomplete event at EOF discarded | COMPLIANT | sse-fyk (fixed: scanner discards partial events; reconnect on io.EOF and io.ErrUnexpectedEOF) |
 | CL-001 | Send `Accept: text/event-stream` | COMPLIANT | — |
 | CL-002 | Send `Cache-Control: no-cache` | COMPLIANT | — |
 | CL-003 | Send `Last-Event-ID` header when non-empty | COMPLIANT | — |
@@ -256,12 +256,12 @@ Current compliance status as of 2026-02-26. Status definitions:
 | NF-003 | Context cancel stops all goroutines | COMPLIANT | sse-1vw, sse-c6q (fixed: context propagated into readLoop) |
 | NF-004 | Unsubscribe does not deadlock | COMPLIANT | sse-vuw (fixed) |
 | NF-005 | Server Close() no goroutine leaks | PARTIAL | sse-svu |
-| NF-006 | EventLog bounded (max size / TTL) | PARTIAL | sse-eg7 (fixed MaxEntries), sse-bbt (TTL pending) |
-| NF-007 | Scanner buffer configurable max size | PARTIAL | sse-5xl |
+| NF-006 | EventLog bounded (max size / TTL) | COMPLIANT | sse-eg7 (MaxEntries), sse-bbt (EventTTL field in Server — both done) |
+| NF-007 | Scanner buffer configurable max size | COMPLIANT | sse-5xl (ClientMaxBufferSize functional option — already implemented) |
 | NF-008 | Connection close releases all resources | PARTIAL | sse-svu |
 | NF-009 | Writer errors checked in ServeHTTP | COMPLIANT | sse-6lv (fixed) |
 | NF-010 | External errors wrapped with context | COMPLIANT | sse-71z (fixed: errors wrapped with %w) |
 | NF-011 | Scanner overflow surfaced (not silent) | COMPLIANT | sse-2e2 (fixed) |
-| NF-012 | Public API has test coverage | PARTIAL | — |
+| NF-012 | Public API has test coverage | COMPLIANT | — |
 | NF-013 | Tests are deterministic | COMPLIANT | sse-zfc (fixed, event-driven sync) |
-| NF-014 | Tests in external package (`sse_test`) | NON-COMPLIANT | sse-4pn |
+| NF-014 | Tests in external package (`sse_test`) | PARTIAL | sse-4pn (event_log_test.go migrated; others blocked on unexported symbols) |

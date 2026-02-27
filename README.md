@@ -6,6 +6,7 @@ backlog, and keep the library current with modern Go. Full credit to the origina
 r3labs authors for the foundational work.
 
 [![CI](https://github.com/joshuafuller/sse/actions/workflows/ci.yml/badge.svg)](https://github.com/joshuafuller/sse/actions/workflows/ci.yml)
+[![Lint](https://github.com/joshuafuller/sse/actions/workflows/lint.yml/badge.svg)](https://github.com/joshuafuller/sse/actions/workflows/lint.yml)
 [![Go Reference](https://pkg.go.dev/badge/github.com/joshuafuller/sse/v3.svg)](https://pkg.go.dev/github.com/joshuafuller/sse/v3)
 [![License: MPL 2.0](https://img.shields.io/badge/License-MPL_2.0-brightgreen.svg)](https://opensource.org/licenses/MPL-2.0)
 
@@ -37,7 +38,6 @@ All fixes are covered by regression tests and verified with the race detector.
 | **Client** | Scanner buffer overflow returns `bufio.ErrTooLong` instead of `io.EOF` | [#158](https://github.com/r3labs/sse/issues/158) |
 | **Client** | ID-only events (no `data:`) not dispatched to handler per WHATWG spec | [#163](https://github.com/r3labs/sse/issues/163) |
 | **Parser** | Leading UTF-8 BOM stripped from event stream before parsing | — |
-| **Client** | `id:` field value containing U+0000 NULL ignored; `LastEventID` unchanged | — |
 | **Testing** | `TestSubscribeWithContextDone` rewritten with event-driven sync; no more timing-based flakiness | [#186](https://github.com/r3labs/sse/issues/186) |
 | **Client** | `OnConnect` callback fires immediately after HTTP 200 response instead of on first event | [#149](https://github.com/r3labs/sse/issues/149) |
 | **Client** | `io.ErrUnexpectedEOF` (keepalive timeout) triggers silent reconnect; `disconnectcb` not called spuriously | — |
