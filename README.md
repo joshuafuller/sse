@@ -52,6 +52,9 @@ All fixes are covered by regression tests and verified with the race detector.
 | **Client** | `Last-Event-ID` header value sanitized — NULL, LF, CR characters stripped before sending | — |
 | **Server** | Empty `id:` field (`IDPresent=true`, empty value) emits bare `id:\n` to reset client LastEventID | — |
 | **Server** | Per-subscriber goroutine leak on stream shutdown fixed; `sub.close()` selects on `streamQuit` | — |
+| **Server** | `Cache-Control` response header changed from `no-cache` to `no-store` per WHATWG SSE spec | — |
+| **Client** | `Connected` bool field replaced by `Connected() bool` method backed by `atomic.Bool`; eliminates data race under concurrent subscribe calls | — |
+| **Client** | `fmt.Errorf` in base64 decode path changed from `%s` to `%w`; decode errors now chain correctly with `errors.Is`/`errors.As` | — |
 
 ## Migrating from r3labs/sse
 
@@ -89,6 +92,24 @@ for _, ev := range log {
 server.CreateStream("messages")
 stream := server.GetStream("messages")
 stream.Eventlog.MaxEntries = 100
+```
+
+#### `Client.Connected` field removed
+
+`Connected bool` was a public field on `*Client`. It is now an `atomic.Bool` accessed via the `Connected() bool` method. Direct field reads will not compile.
+
+**Before:**
+```go
+if client.Connected {
+    fmt.Println("connected")
+}
+```
+
+**After:**
+```go
+if client.Connected() {
+    fmt.Println("connected")
+}
 ```
 
 #### Behavioral changes to be aware of
