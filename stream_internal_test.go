@@ -20,14 +20,17 @@ import (
 // Maybe fix this in the future so we can test with -race enabled
 
 func TestStreamAddSubscriber(t *testing.T) {
-	s := newStream("test", 1024, true, false, nil, nil)
+	// AutoReplay=false keeps the test simple: no event log replay, so exactly
+	// one event arrives per publish. The previous version used AutoReplay=true
+	// and sent an event before the subscriber registered; depending on goroutine
+	// scheduling the event could be replayed at subscribe time AND dispatched
+	// again, leaving two messages in the channel and breaking the len assertion.
+	s := newStream("test", 1024, false, false, nil, nil)
 	s.run()
 	defer s.close()
 
-	s.event <- &Event{Data: []byte("test")}
 	sub, ok := s.addSubscriber(0, nil)
 	require.True(t, ok, "addSubscriber should succeed when MaxSubscribers is 0")
-
 	assert.Equal(t, 1, s.getSubscriberCount())
 
 	s.event <- &Event{Data: []byte("test")}

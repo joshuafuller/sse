@@ -213,37 +213,47 @@ func TestTryPublishSuccess(t *testing.T) {
 
 // TestTryPublishDrop verifies that TryPublish returns false and drops the event
 // when the stream's event channel is full (no blocking).
+//
+// We inject the stream directly without calling run() so that no goroutine
+// drains stream.event concurrently — that race is what made the previous
+// implementation flaky on CI.
 func TestTryPublishDrop(t *testing.T) {
 	s := New()
 	s.BufferSize = 1 // tiny buffer — easy to fill
-	defer s.Close()
 
-	s.CreateStream("test")
+	// Build a stream without starting the run() goroutine.  We register it
+	// directly in the server's map so TryPublish can find it, but without a
+	// running goroutine the event channel is never drained between writes.
+	str := newStream("test", s.BufferSize, false, false, nil, nil)
+	s.muStreams.Lock()
+	s.streams["test"] = str
+	s.muStreams.Unlock()
 
-	// Fill the event channel completely so the next send would block.
-	stream := s.getStream("test")
-	stream.event <- &Event{Data: []byte("fill")}
+	// Pre-fill the event channel to capacity (buffer == 1).
+	str.event <- &Event{Data: []byte("fill")}
 
 	// The channel is now full; TryPublish must drop and return false.
 	got := s.TryPublish("test", &Event{Data: []byte("dropped")})
 	assert.False(t, got, "TryPublish should return false when channel is full")
 
-	// Drain the channel to confirm only the fill event is present (the
-	// dropped event must not have been queued).
+	// Drain to confirm only the fill event is present.
 	select {
-	case ev := <-stream.event:
+	case ev := <-str.event:
 		assert.Equal(t, []byte("fill"), ev.Data, "only the fill event should be in the channel")
-	case <-time.After(time.Second):
-		t.Fatal("expected fill event in channel, got timeout")
+	default:
+		t.Fatal("fill event missing from channel")
 	}
 
-	// No further event should be in the channel.
+	// Channel must now be empty.
 	select {
-	case ev := <-stream.event:
-		t.Fatalf("unexpected event in channel after drop: %q", ev.Data)
+	case ev := <-str.event:
+		t.Fatalf("unexpected extra event in channel: %q", ev.Data)
 	default:
-		// good — channel is empty
+		// correct
 	}
+
+	// Close the quit channel so the stream can be GC'd cleanly.
+	str.close()
 }
 
 // TestTryPublishNonExistentStream verifies that TryPublish returns false when
