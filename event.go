@@ -29,22 +29,19 @@ func (e *Event) hasContent() bool {
 
 // EventStreamReader scans an io.Reader looking for EventStream messages.
 type EventStreamReader struct {
-	scanner *bufio.Scanner
-}
-
-// stripBOM removes a leading UTF-8 BOM (EF BB BF) if present.
-func stripBOM(r io.Reader) io.Reader {
-	buf := make([]byte, 3)
-	n, _ := io.ReadFull(r, buf)
-	if n == 3 && buf[0] == 0xEF && buf[1] == 0xBB && buf[2] == 0xBF {
-		return r // BOM consumed
-	}
-	return io.MultiReader(bytes.NewReader(buf[:n]), r)
+	scanner    *bufio.Scanner
+	bomChecked bool // true after the first ReadEvent call checked/stripped any BOM
 }
 
 // NewEventStreamReader creates an instance of EventStreamReader.
+//
+// BOM stripping is intentionally deferred to the first ReadEvent call so that
+// NewEventStreamReader never performs a blocking read on eventStream.  Doing an
+// eager io.ReadFull here would deadlock goroutines that need to reach a select
+// statement before any data arrives (e.g. SubscribeChanWithContext waiting for
+// a quit signal from Unsubscribe).
 func NewEventStreamReader(eventStream io.Reader, maxBufferSize int) *EventStreamReader {
-	scanner := bufio.NewScanner(stripBOM(eventStream))
+	scanner := bufio.NewScanner(eventStream)
 	initBufferSize := minPosInt(4096, maxBufferSize)
 	scanner.Buffer(make([]byte, initBufferSize), maxBufferSize)
 
@@ -137,6 +134,11 @@ func minPosInt(a, b int) int {
 func (e *EventStreamReader) ReadEvent() ([]byte, error) {
 	if e.scanner.Scan() {
 		event := e.scanner.Bytes()
+		if !e.bomChecked {
+			e.bomChecked = true
+			// Strip a leading UTF-8 BOM (EF BB BF) if present, per WHATWG SSE §9.2.6.
+			event = bytes.TrimPrefix(event, []byte{0xEF, 0xBB, 0xBF})
+		}
 		return event, nil
 	}
 	if err := e.scanner.Err(); err != nil {
