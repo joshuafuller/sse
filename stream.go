@@ -160,6 +160,7 @@ func (str *Stream) addSubscriber(eventid int, url *url.URL) (*Subscriber, bool) 
 	sub := &Subscriber{
 		eventid:    eventid,
 		quit:       str.deregister,
+		streamQuit: str.quit,
 		connection: make(chan *Event, 64),
 		URL:        url,
 	}
