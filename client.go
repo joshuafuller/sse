@@ -210,6 +210,11 @@ func (c *Client) SubscribeChanWithContext(ctx context.Context, stream string, ch
 	errch := make(chan error)
 	c.mu.Lock()
 	c.subscribed[ch] = make(chan struct{}, 1)
+	// Capture the quit channel before launching the goroutine so the goroutine
+	// never reads c.subscribed[ch] (a map lookup) without holding c.mu. This
+	// eliminates the data race between the goroutine's map reads (lines below)
+	// and concurrent map writes in other SubscribeChanWithContext calls.
+	quitCh := c.subscribed[ch]
 	c.mu.Unlock()
 
 	go func() {
@@ -275,7 +280,7 @@ func (c *Client) SubscribeChanWithContext(ctx context.Context, stream string, ch
 				var msg *Event
 				// Wait for message to arrive or exit
 				select {
-				case <-c.subscribed[ch]:
+				case <-quitCh:
 					return nil
 				case err = <-errorChan:
 					return err
@@ -285,7 +290,7 @@ func (c *Client) SubscribeChanWithContext(ctx context.Context, stream string, ch
 				// Wait for message to be sent or exit
 				if msg != nil {
 					select {
-					case <-c.subscribed[ch]:
+					case <-quitCh:
 						return nil
 					case ch <- msg:
 						// message sent

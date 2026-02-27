@@ -1599,3 +1599,44 @@ func TestClientSubscribeChanRawWithContext(t *testing.T) {
 	cancel()
 	c.Unsubscribe(events)
 }
+
+// TestSubscribeChanConcurrentMapRace verifies that concurrent calls to
+// SubscribeChanWithContext do not produce a data race on the c.subscribed map.
+// The race detector catches unsynchronised map reads inside the goroutine
+// (c.subscribed[ch]) racing against the map write on entry.
+func TestSubscribeChanConcurrentMapRace(t *testing.T) {
+	// Server keeps connections open until the client disconnects so both
+	// goroutines stay alive long enough for the race detector to observe any
+	// concurrent accesses.
+	tsrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		w.Header().Set("Cache-Control", "no-cache")
+		w.WriteHeader(http.StatusOK)
+		_, _ = fmt.Fprintf(w, "data: hello\n\n")
+		w.(http.Flusher).Flush()
+		<-r.Context().Done()
+	}))
+	defer tsrv.Close()
+
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+
+	c := sse.NewClient(tsrv.URL)
+	c.ReconnectStrategy = backoff.NewConstantBackOff(50 * time.Millisecond)
+
+	ch1 := make(chan *sse.Event, 8)
+	ch2 := make(chan *sse.Event, 8)
+
+	var wg sync.WaitGroup
+	wg.Add(2)
+	go func() {
+		defer wg.Done()
+		_ = c.SubscribeChanWithContext(ctx, "", ch1)
+	}()
+	go func() {
+		defer wg.Done()
+		_ = c.SubscribeChanWithContext(ctx, "", ch2)
+	}()
+
+	wg.Wait()
+}
