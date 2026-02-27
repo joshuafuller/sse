@@ -138,6 +138,49 @@ func TestStreamMultipleSubscribers(t *testing.T) {
 	assert.Equal(t, 0, s.getSubscriberCount())
 }
 
+// TestRemoveAllSubscribersWithRemovedChannel verifies sse-6t3: the
+// removed != nil branch in removeAllSubscribers is exercised when a
+// subscriber carries a removed channel (auto-stream path).
+//
+// We do NOT call s.run() because removeAllSubscribers is an internal method
+// that operates on str.subscribers directly. Running the goroutine concurrently
+// would race on that slice. Instead we construct the subscriber by hand
+// (mirroring what addSubscriber does for isAutoStream==true) and inject it
+// directly into str.subscribers, then call removeAllSubscribers from the same
+// goroutine — no concurrent access, race-detector-clean.
+func TestRemoveAllSubscribersWithRemovedChannel(t *testing.T) {
+	s := newStream("test", 1024, false, true, nil, nil)
+	// Do NOT call s.run() — we invoke removeAllSubscribers directly.
+
+	// Build a subscriber the same way addSubscriber does for an auto-stream.
+	removedCh := make(chan struct{}, 1)
+	sub := &Subscriber{
+		quit:       s.deregister,
+		streamQuit: s.quit,
+		connection: make(chan *Event, 64),
+		removed:    removedCh,
+	}
+
+	// Inject directly so there is no concurrent goroutine touching the slice.
+	s.subscribers = append(s.subscribers, sub)
+	s.subscriberCount = 1
+
+	// Call the function under test.
+	s.removeAllSubscribers()
+
+	// The removed channel (buffered 1) must have received the signal before
+	// being closed.
+	select {
+	case _, ok := <-removedCh:
+		assert.True(t, ok, "removed channel should deliver a struct{}{} before being closed")
+	default:
+		t.Fatal("removed channel should have received a signal but had none")
+	}
+
+	assert.Equal(t, 0, s.getSubscriberCount())
+	assert.Empty(t, s.subscribers)
+}
+
 // TestStreamMaxSubscribersRejected verifies sse-6rz at the stream level:
 // addSubscriber returns (nil, false) when MaxSubscribers is exceeded.
 func TestStreamMaxSubscribersRejected(t *testing.T) {
