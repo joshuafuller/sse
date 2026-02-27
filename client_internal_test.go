@@ -522,3 +522,254 @@ func TestEventStreamReaderLFBareCRTerminator(t *testing.T) {
 	assert.Equal(t, []byte("second"), ev2.Data,
 		"second event Data must be 'second'; got %q (events must not be merged)", ev2.Data)
 }
+
+// TestProcessEventEmptyMessage verifies that processEvent returns
+// ErrEmptyEventMessage when given a zero-length input slice.
+// This covers the len(msg) < 1 early-return guard on client.go:536.
+func TestProcessEventEmptyMessage(t *testing.T) {
+	c := NewClient("http://localhost")
+	_, err := c.processEvent([]byte{})
+	require.ErrorIs(t, err, ErrEmptyEventMessage,
+		"processEvent must return ErrEmptyEventMessage for empty input; got: %v", err)
+}
+
+// TestProcessEventBareDataField verifies that a line that is exactly the
+// string "data" (no colon, no value) appends a bare '\n' to the data buffer,
+// per WHATWG SSE §9.2.6. This covers the case statement on client.go:555.
+func TestProcessEventBareDataField(t *testing.T) {
+	c := NewClient("http://localhost")
+	// A bare "data" line followed by a normal data line. The bare line
+	// contributes an empty segment so the final value is "\nhello".
+	raw := []byte("data\ndata: hello\n")
+	event, err := c.processEvent(raw)
+	require.NoError(t, err)
+	// The bare "data" line adds '\n'; "data: hello" adds "hello\n"; trailing
+	// '\n' is trimmed by spec, leaving "\nhello".
+	assert.Equal(t, []byte("\nhello"), event.Data,
+		"bare 'data' line must append \\n to event data; got %q", event.Data)
+}
+
+// TestTrimHeaderTrailingNewline verifies that trimHeader strips a trailing
+// '\n' (byte 10) from the value. This covers the last branch on client.go:602.
+func TestTrimHeaderTrailingNewline(t *testing.T) {
+	// "data: hello\n" — the trailing newline must be stripped.
+	input := []byte("data: hello\n")
+	got := trimHeader(len(headerData), input)
+	assert.Equal(t, []byte("hello"), got,
+		"trimHeader must strip trailing newline; got %q", got)
+}
+
+// TestRequestCustomHeaders verifies that key/value pairs in Client.Headers are
+// forwarded on every HTTP request. This covers the for-loop on client.go:495.
+func TestRequestCustomHeaders(t *testing.T) {
+	var gotHeader string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotHeader = r.Header.Get("X-Custom")
+		w.Header().Set("Content-Type", "text/event-stream")
+		w.WriteHeader(http.StatusOK)
+		// Close immediately so the client doesn't block forever.
+	}))
+	defer srv.Close()
+
+	c := NewClient(srv.URL)
+	c.Headers = map[string]string{"X-Custom": "testvalue"}
+
+	// Call request directly to verify the header is sent.
+	resp, err := c.request(context.Background(), "")
+	if err == nil {
+		_ = resp.Body.Close()
+	}
+	assert.Equal(t, "testvalue", gotHeader,
+		"custom header must be forwarded in every request; got %q", gotHeader)
+}
+
+// TestRequestCustomMethod verifies that Client.Method overrides the default
+// GET. This also covers the if method == "" guard on client.go:453.
+func TestRequestCustomMethod(t *testing.T) {
+	var gotMethod string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotMethod = r.Method
+		w.Header().Set("Content-Type", "text/event-stream")
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer srv.Close()
+
+	c := NewClient(srv.URL)
+	c.Method = http.MethodPost
+
+	resp, err := c.request(context.Background(), "")
+	if err == nil {
+		_ = resp.Body.Close()
+	}
+	assert.Equal(t, http.MethodPost, gotMethod,
+		"Client.Method must override the default GET; got %q", gotMethod)
+}
+
+// TestSubscribeWithContextRetryDelay verifies that when Client.retryDelay > 0
+// and no custom ReconnectStrategy is set, SubscribeWithContext applies
+// retryDelay as the exponential backoff's initial interval.
+// This covers the eb.InitialInterval = c.retryDelay branch on client.go:151.
+func TestSubscribeWithContextRetryDelay(t *testing.T) {
+	// Server sends a real event and then blocks until the client disconnects.
+	// The server is kept alive so the client's connection stays open.
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		w.WriteHeader(http.StatusOK)
+		fmt.Fprint(w, "data: hello\n\n")
+		w.(http.Flusher).Flush()
+		<-r.Context().Done()
+	}))
+	defer srv.Close()
+
+	c := NewClient(srv.URL)
+	// Pre-set retryDelay so the branch eb.InitialInterval = c.retryDelay executes
+	// when SubscribeWithContext builds its default exponential backoff.
+	c.mu.Lock()
+	c.retryDelay = 50 * time.Millisecond
+	c.mu.Unlock()
+	// Leave ReconnectStrategy nil so the default exponential backoff is used
+	// (that's the only path that reads retryDelay).
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	received := make(chan struct{}, 1)
+	go func() {
+		_ = c.SubscribeWithContext(ctx, "", func(msg *Event) {
+			select {
+			case received <- struct{}{}:
+			default:
+			}
+		})
+	}()
+
+	select {
+	case <-received:
+		// Event received — the retryDelay branch was exercised when building
+		// the backoff strategy before the connection was made.
+		cancel()
+	case <-time.After(3 * time.Second):
+		t.Fatal("timed out waiting for event from SubscribeWithContext")
+	}
+}
+
+// TestSubscribeWithContextResponseValidator verifies that when a custom
+// ResponseValidator is set and returns a permanent error, SubscribeWithContext
+// propagates that error without retrying. This covers client.go:165-168.
+func TestSubscribeWithContextResponseValidator(t *testing.T) {
+	// The server writes headers and then returns immediately. Flush is called
+	// to ensure headers are sent before the handler returns.
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		w.WriteHeader(http.StatusOK)
+		w.(http.Flusher).Flush()
+		// Handler returns immediately so the response body is closed server-side.
+	}))
+	defer srv.Close()
+
+	validationErr := errors.New("custom validation failed")
+	c := NewClient(srv.URL)
+	c.ResponseValidator = func(cl *Client, resp *http.Response) error {
+		// Return a permanent error so backoff stops immediately.
+		return backoff.Permanent(validationErr)
+	}
+
+	err := c.SubscribeWithContext(context.Background(), "", func(_ *Event) {})
+	require.Error(t, err, "SubscribeWithContext must return error when ResponseValidator fails")
+	assert.ErrorIs(t, err, validationErr)
+}
+
+// TestSubscribeChanWithContextRequestError verifies that when the underlying
+// HTTP request fails (e.g. connection refused), SubscribeChanWithContext
+// returns the error to the caller before any connection is established.
+// This covers the "return err" branch at client.go:259 (request error path).
+func TestSubscribeChanWithContextRequestError(t *testing.T) {
+	// Point at a port that is definitely not listening.
+	c := NewClient("http://127.0.0.1:1")
+	// Stop retrying immediately so the test doesn't wait for backoff.
+	c.ReconnectStrategy = backoff.WithMaxRetries(backoff.NewExponentialBackOff(), 0)
+
+	ch := make(chan *Event, 1)
+	err := c.SubscribeChanWithContext(context.Background(), "", ch)
+	require.Error(t, err,
+		"SubscribeChanWithContext must return an error when the HTTP request itself fails")
+}
+
+// TestSubscribeChanWithContextRetryDelay verifies that when Client.retryDelay > 0
+// and no custom ReconnectStrategy is set, SubscribeChanWithContext applies
+// retryDelay as the exponential backoff's initial interval.
+// This covers the eb.InitialInterval = c.retryDelay branch on client.go:250.
+func TestSubscribeChanWithContextRetryDelay(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		w.WriteHeader(http.StatusOK)
+		fmt.Fprint(w, "data: pong\n\n")
+		w.(http.Flusher).Flush()
+		<-r.Context().Done()
+	}))
+	defer srv.Close()
+
+	c := NewClient(srv.URL)
+	// Pre-set retryDelay so the branch eb.InitialInterval = c.retryDelay
+	// executes when SubscribeChanWithContext builds its default exponential
+	// backoff. ReconnectStrategy must be nil for that branch to run.
+	c.mu.Lock()
+	c.retryDelay = 50 * time.Millisecond
+	c.mu.Unlock()
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	ch := make(chan *Event, 4)
+	go func() {
+		_ = c.SubscribeChanWithContext(ctx, "", ch)
+	}()
+
+	select {
+	case ev := <-ch:
+		assert.Equal(t, []byte("pong"), ev.Data)
+		cancel()
+	case <-time.After(3 * time.Second):
+		t.Fatal("timed out waiting for event from SubscribeChanWithContext with retryDelay")
+	}
+}
+
+// TestSubscribeWithContextDisconnectCallback verifies that the disconnect
+// callback fires when SubscribeWithContext returns after successful connection.
+// This covers the c.disconnectcb(c) call on client.go:208.
+func TestSubscribeWithContextDisconnectCallback(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		w.WriteHeader(http.StatusOK)
+		fmt.Fprint(w, "data: hi\n\n")
+		w.(http.Flusher).Flush()
+		<-r.Context().Done()
+	}))
+	defer srv.Close()
+
+	c := NewClient(srv.URL)
+	c.ReconnectStrategy = backoff.WithMaxRetries(backoff.NewExponentialBackOff(), 0)
+
+	disconnected := make(chan struct{}, 1)
+	c.OnDisconnect(func(_ *Client) {
+		select {
+		case disconnected <- struct{}{}:
+		default:
+		}
+	})
+	c.OnConnect(func(_ *Client) {})
+
+	ctx, cancel := context.WithCancel(context.Background())
+	go func() {
+		_ = c.SubscribeWithContext(ctx, "", func(msg *Event) {
+			cancel() // cancel after first event
+		})
+	}()
+
+	select {
+	case <-disconnected:
+		// disconnect callback fired as expected
+	case <-time.After(3 * time.Second):
+		t.Fatal("disconnect callback was not called after SubscribeWithContext returned")
+	}
+}

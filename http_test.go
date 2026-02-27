@@ -1080,3 +1080,123 @@ func TestEventTTLWithAutoReplayFalse(t *testing.T) {
 		t.Fatal("timed out: event was silently dropped — EventTTL bug with AutoReplay=false (sse-6rd)")
 	}
 }
+
+// TestServeHTTPWithFlusherMissingStreamParam verifies that ServeHTTPWithFlusher
+// returns HTTP 500 when the request has no "stream" query parameter.
+// This covers the http.Error("Please specify a stream!") branch on http.go:63.
+func TestServeHTTPWithFlusherMissingStreamParam(t *testing.T) {
+	t.Parallel()
+
+	s := sse.New()
+	defer s.Close()
+
+	rec := httptest.NewRecorder()
+	// Request with no ?stream= parameter.
+	req := httptest.NewRequest(http.MethodGet, "/events", nil)
+
+	mf := &mockFlusher{}
+	s.ServeHTTPWithFlusher(rec, req, mf)
+
+	assert.Equal(t, http.StatusInternalServerError, rec.Code,
+		"missing stream param must yield 500; got %d", rec.Code)
+	assert.Contains(t, rec.Body.String(), "Please specify a stream!")
+}
+
+// TestServeHTTPWithFlusherCustomHeaders verifies that custom headers set via
+// Server.Headers are written to the response. This covers the
+// w.Header().Set(k, v) loop on http.go:56-58.
+func TestServeHTTPWithFlusherCustomHeaders(t *testing.T) {
+	t.Parallel()
+
+	s := sse.New()
+	defer s.Close()
+	s.AutoReplay = false
+	s.Headers = map[string]string{"X-Accel-Buffering": "no", "X-Test": "custom"}
+
+	stream := s.CreateStream("hdr-test")
+
+	mux := http.NewServeMux()
+	mux.HandleFunc("/events", s.ServeHTTP)
+	srv := httptest.NewServer(mux)
+	defer srv.Close()
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, srv.URL+"/events?stream=hdr-test", nil)
+	require.NoError(t, err)
+
+	respCh := make(chan *http.Response, 1)
+	go func() {
+		resp, doErr := http.DefaultClient.Do(req) //nolint:bodyclose
+		if doErr == nil {
+			respCh <- resp
+		}
+	}()
+
+	// Wait for subscriber to register.
+	require.Eventually(t, func() bool {
+		return stream.SubscriberCount() == 1
+	}, 2*time.Second, 10*time.Millisecond, "subscriber did not register in time")
+
+	select {
+	case resp := <-respCh:
+		defer resp.Body.Close()
+		assert.Equal(t, "no", resp.Header.Get("X-Accel-Buffering"),
+			"custom header X-Accel-Buffering must be present in response")
+		assert.Equal(t, "custom", resp.Header.Get("X-Test"),
+			"custom header X-Test must be present in response")
+	case <-time.After(2 * time.Second):
+		// Response headers are sent immediately on connect; this should not time out.
+		t.Fatal("timed out waiting for response headers")
+	}
+}
+
+// TestServeHTTPWithFlusherDataWithColonPrefix verifies that when event data
+// starts with ':' it is emitted verbatim (without "data: " prefix), per the
+// server's SplitData=false branch on http.go:146-148.
+func TestServeHTTPWithFlusherDataWithColonPrefix(t *testing.T) {
+	t.Parallel()
+
+	s := sse.New()
+	defer s.Close()
+	s.AutoReplay = false
+	// SplitData must be false (default) to reach the bytes.HasPrefix(':') branch.
+
+	stream := s.CreateStream("colon-test")
+
+	mux := http.NewServeMux()
+	mux.HandleFunc("/events", s.ServeHTTP)
+	srv := httptest.NewServer(mux)
+	defer srv.Close()
+
+	resp, err := http.Get(srv.URL + "/events?stream=colon-test")
+	require.NoError(t, err)
+	defer resp.Body.Close()
+	require.Equal(t, http.StatusOK, resp.StatusCode)
+
+	require.Eventually(t, func() bool {
+		return stream.SubscriberCount() == 1
+	}, 2*time.Second, 10*time.Millisecond, "subscriber did not register in time")
+
+	// Data starting with ':' must be emitted verbatim, not prefixed with "data: ".
+	s.Publish("colon-test", &sse.Event{Data: []byte(": this looks like a comment")})
+
+	done := make(chan []byte, 1)
+	go func() {
+		buf := make([]byte, 4096)
+		n, _ := resp.Body.Read(buf)
+		done <- buf[:n]
+	}()
+
+	select {
+	case data := <-done:
+		body := string(data)
+		assert.Contains(t, body, ": this looks like a comment",
+			"data starting with ':' must be emitted verbatim")
+		assert.NotContains(t, body, "data: : this looks like a comment",
+			"data starting with ':' must NOT be prefixed with 'data: '")
+	case <-time.After(2 * time.Second):
+		t.Fatal("timed out waiting for event")
+	}
+}

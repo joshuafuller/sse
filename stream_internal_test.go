@@ -247,3 +247,36 @@ func TestReplayDoesNotBlockOnSlowSubscriber(t *testing.T) {
 		t.Fatal("Replay blocked on a full subscriber channel — sse-xua not fixed")
 	}
 }
+
+// TestGetSubIndexNotFound verifies that getSubIndex returns -1 when the
+// subscriber is not in the stream's subscriber list. This covers the
+// "return -1" path on stream.go:155.
+func TestGetSubIndexNotFound(t *testing.T) {
+	s := newStream("test", 1024, false, false, nil, nil)
+	// Do NOT call s.run() — we access str.subscribers directly.
+
+	// Build a subscriber that was never added to the stream.
+	orphan := &Subscriber{
+		quit:       s.deregister,
+		streamQuit: s.quit,
+		connection: make(chan *Event, 64),
+	}
+
+	idx := s.getSubIndex(orphan)
+	assert.Equal(t, -1, idx,
+		"getSubIndex must return -1 for a subscriber not in the list; got %d", idx)
+}
+
+// TestGetSubIndexFound verifies that getSubIndex returns the correct index
+// when the subscriber is present, confirming the positive path is also sound.
+func TestGetSubIndexFound(t *testing.T) {
+	s := newStream("test", 1024, false, false, nil, nil)
+
+	// Inject two subscribers directly.
+	sub1 := &Subscriber{connection: make(chan *Event, 64)}
+	sub2 := &Subscriber{connection: make(chan *Event, 64)}
+	s.subscribers = append(s.subscribers, sub1, sub2)
+
+	assert.Equal(t, 0, s.getSubIndex(sub1), "getSubIndex must return 0 for first subscriber")
+	assert.Equal(t, 1, s.getSubIndex(sub2), "getSubIndex must return 1 for second subscriber")
+}
