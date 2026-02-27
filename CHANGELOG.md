@@ -12,6 +12,10 @@ repository and are documented in its
 
 ## [Unreleased]
 
+---
+
+## [v3.0.3] — 2026-02-27
+
 ### Fixed
 
 - **Client — data race in `SubscribeChanWithContext`**: the goroutine read
@@ -353,7 +357,8 @@ out of scope, documentation-only, or already addressed by existing behaviour:
 
 ---
 
-[Unreleased]: https://github.com/joshuafuller/sse/compare/v3.0.2...HEAD
+[Unreleased]: https://github.com/joshuafuller/sse/compare/v3.0.3...HEAD
+[v3.0.3]: https://github.com/joshuafuller/sse/compare/v3.0.2...v3.0.3
 [v3.0.2]: https://github.com/joshuafuller/sse/compare/v3.0.1...v3.0.2
 [v3.0.1]: https://github.com/joshuafuller/sse/compare/v3.0.0...v3.0.1
 [v3.0.0]: https://github.com/joshuafuller/sse/compare/v2.10.0...v3.0.0
