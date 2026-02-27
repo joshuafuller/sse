@@ -12,6 +12,33 @@ repository and are documented in its
 
 ## [Unreleased]
 
+### Fixed
+
+- **Client — `Connected()` stuck `true` after context cancellation**: `connected.Store(false)`
+  and `disconnectcb` were only invoked in one narrow path inside `readLoop` (non-EOF,
+  non-context errors with a disconnect callback registered). After a normal context
+  cancellation or after all backoff retries were exhausted, `Connected()` remained `true`
+  indefinitely and `OnDisconnect` was never called. Fixed by adding a final-cleanup defer
+  at the goroutine/function boundary in both `SubscribeWithContext` and
+  `SubscribeChanWithContext` that atomically swaps `connected` to `false` and fires
+  `disconnectcb` exactly once (using `atomic.Bool.Swap` to avoid double-calling when
+  `readLoop`'s legacy path already set it).
+
+- **Server — `Cache-Control` response header corrected to `no-cache`**: The server was
+  sending `Cache-Control: no-cache` in the request (client side, correct) but
+  `Cache-Control: no-store` in the response (server side, incorrect). The WHATWG SSE
+  spec §9.2.1 recommends `no-cache` for server responses so intermediaries know not to
+  buffer the stream. Changed `http.go` to emit `no-cache`.
+
+### Added
+
+- **Testing — 26-test end-to-end smoke suite** (`smoke_test.go`): Comprehensive
+  integration tests in `package sse_test` that validate every major API surface against
+  the README patterns. Covers: server publish, auto-stream, event TTL, event log replay,
+  max subscribers, TryPublish, OnConnect/OnDisconnect callbacks, multi-stream isolation,
+  base64 encoding, split-data, per-stream callbacks, reconnect-on-EOF, event log max
+  entries, and more. All 26 tests pass with `-race`.
+
 ---
 
 ## [v3.0.4] — 2026-02-27
