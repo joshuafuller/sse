@@ -41,7 +41,7 @@ func newStream(id string, buffSize int, replay, isAutoStream bool, onSubscribe, 
 		deregister:    make(chan *Subscriber),
 		event:         make(chan *Event, buffSize),
 		quit:          make(chan struct{}),
-		Eventlog:      make(EventLog, 0),
+		Eventlog:      EventLog{},
 		OnSubscribe:   onSubscribe,
 		OnUnsubscribe: onUnsubscribe,
 	}
@@ -75,7 +75,11 @@ func (str *Stream) run() {
 					str.Eventlog.Add(event)
 				}
 				for i := range str.subscribers {
-					str.subscribers[i].connection <- event
+					select {
+					case str.subscribers[i].connection <- event:
+					default:
+						// Drop event for slow subscriber to avoid blocking the stream
+					}
 				}
 
 			// Shutdown if the server closes

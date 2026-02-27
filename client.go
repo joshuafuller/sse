@@ -250,8 +250,10 @@ func (c *Client) readLoop(reader *EventStreamReader, outCh chan *Event, erChan c
 				msg.ID, _ = c.LastEventID.Load().([]byte)
 			}
 
-			// Send downstream if the event has something useful
-			if msg.hasContent() {
+			// Per WHATWG spec: if the data buffer is empty, do not dispatch
+			// the event. ID-only events update LastEventID above but must
+			// not be sent downstream.
+			if len(msg.Data) > 0 || len(msg.Event) > 0 || len(msg.Retry) > 0 {
 				outCh <- msg
 			}
 		}

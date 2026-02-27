@@ -71,6 +71,34 @@ func TestStreamDisableAutoReplay(t *testing.T) {
 	assert.Equal(t, 0, len(sub.connection))
 }
 
+func TestStreamSlowSubscriberDoesNotBlockOthers(t *testing.T) {
+	s := newStream("test", 1024, false, false, nil, nil)
+	s.run()
+	defer s.close()
+
+	slowSub := s.addSubscriber(0, nil)
+	fastSub := s.addSubscriber(0, nil)
+
+	// Wait for both subscribers to be registered
+	time.Sleep(time.Millisecond * 100)
+
+	// Fill the slow subscriber's channel to capacity so sends to it would block
+	for i := 0; i < cap(slowSub.connection); i++ {
+		slowSub.connection <- &Event{Data: []byte("filler")}
+	}
+
+	// Now publish an event — this must not block on the slow subscriber
+	s.event <- &Event{Data: []byte("important")}
+
+	// The fast subscriber should receive the event promptly
+	select {
+	case ev := <-fastSub.connection:
+		assert.Equal(t, []byte("important"), ev.Data)
+	case <-time.After(2 * time.Second):
+		t.Fatal("fast subscriber blocked by slow subscriber — dispatch is not non-blocking")
+	}
+}
+
 func TestStreamMultipleSubscribers(t *testing.T) {
 	var subs []*Subscriber
 

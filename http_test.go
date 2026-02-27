@@ -185,6 +185,105 @@ func TestHTTPStreamHandlerHeaderFlushIfNoEvents(t *testing.T) {
 	}
 }
 
+func TestHTTPStreamHandlerNonNumericLastEventID(t *testing.T) {
+	s := New()
+	defer s.Close()
+
+	s.CreateStream("test")
+
+	mux := http.NewServeMux()
+	mux.HandleFunc("/events", s.ServeHTTP)
+	server := httptest.NewServer(mux)
+	defer server.Close()
+
+	// Send a request with a non-numeric Last-Event-ID header.
+	// Per WHATWG SSE spec, the server MUST accept any string as Last-Event-ID.
+	req, err := http.NewRequest(http.MethodGet, server.URL+"/events?stream=test", nil)
+	require.NoError(t, err)
+	req.Header.Set("Last-Event-ID", "abc-xyz-not-a-number")
+
+	resp, err := http.DefaultClient.Do(req)
+	require.NoError(t, err)
+	defer resp.Body.Close()
+
+	// Should NOT be 400; the server must accept non-numeric IDs.
+	assert.NotEqual(t, http.StatusBadRequest, resp.StatusCode,
+		"Non-numeric Last-Event-ID must not cause a 400 error")
+	assert.Equal(t, http.StatusOK, resp.StatusCode)
+}
+
+func TestHTTPStreamHandlerMissingStreamReturns404(t *testing.T) {
+	s := New()
+	defer s.Close()
+
+	s.AutoStream = false
+
+	mux := http.NewServeMux()
+	mux.HandleFunc("/events", s.ServeHTTP)
+	server := httptest.NewServer(mux)
+	defer server.Close()
+
+	// Request a stream that does not exist with AutoStream disabled.
+	resp, err := http.Get(server.URL + "/events?stream=nonexistent")
+	require.NoError(t, err)
+	defer resp.Body.Close()
+
+	assert.Equal(t, http.StatusNotFound, resp.StatusCode,
+		"Missing stream should return 404, not 500")
+}
+
+func TestHTTPStreamHandlerEmptyEventDoesNotBreakLoop(t *testing.T) {
+	s := New()
+	defer s.Close()
+
+	s.AutoReplay = false
+
+	stream := s.CreateStream("test")
+
+	mux := http.NewServeMux()
+	mux.HandleFunc("/events", s.ServeHTTP)
+	server := httptest.NewServer(mux)
+	defer server.Close()
+
+	// Make a raw HTTP request to the SSE endpoint
+	resp, err := http.Get(server.URL + "/events?stream=test")
+	require.NoError(t, err)
+	defer resp.Body.Close()
+	require.Equal(t, http.StatusOK, resp.StatusCode)
+
+	// Wait for subscriber to register
+	for i := 0; i < 50; i++ {
+		if stream.getSubscriberCount() > 0 {
+			break
+		}
+		time.Sleep(time.Millisecond * 10)
+	}
+	require.Greater(t, stream.getSubscriberCount(), 0, "subscriber should be registered")
+
+	// Publish an event with an ID but empty data and no comment.
+	// This should be skipped (continue), not terminate the loop (break).
+	s.Publish("test", &Event{ID: []byte("skip-me")})
+
+	// Publish a real event after the empty one
+	s.Publish("test", &Event{Data: []byte("real event")})
+
+	// Read from the SSE stream -- we should get the real event
+	done := make(chan []byte, 1)
+	go func() {
+		buf := make([]byte, 4096)
+		n, _ := resp.Body.Read(buf)
+		done <- buf[:n]
+	}()
+
+	select {
+	case data := <-done:
+		assert.Contains(t, string(data), "real event",
+			"subscriber should have received the real event after the empty one was skipped")
+	case <-time.After(2 * time.Second):
+		t.Fatal("subscriber loop should not have broken on empty event; timed out waiting for real event")
+	}
+}
+
 func TestHTTPStreamHandlerAutoStream(t *testing.T) {
 	t.Parallel()
 

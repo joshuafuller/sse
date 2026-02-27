@@ -11,16 +11,26 @@ import (
 )
 
 func TestEventLog(t *testing.T) {
-	ev := make(EventLog, 0)
+	ev := &EventLog{}
 	testEvent := &Event{Data: []byte("test")}
 
 	ev.Add(testEvent)
 	ev.Clear()
 
-	assert.Equal(t, 0, len(ev))
+	assert.Equal(t, 0, ev.Len())
 
 	ev.Add(testEvent)
 	ev.Add(testEvent)
 
-	assert.Equal(t, 2, len(ev))
+	assert.Equal(t, 2, ev.Len())
+}
+
+func TestEventLogMaxEntries(t *testing.T) {
+	ev := &EventLog{MaxEntries: 5}
+
+	for i := 0; i < 10; i++ {
+		ev.Add(&Event{Data: []byte("event")})
+	}
+
+	assert.Equal(t, 5, ev.Len())
 }

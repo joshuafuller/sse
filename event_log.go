@@ -10,7 +10,12 @@ import (
 )
 
 // EventLog holds all of previous events
-type EventLog []*Event
+type EventLog struct {
+	// MaxEntries limits the number of events retained. When a new event
+	// would exceed this cap the oldest entry is evicted. Zero means unlimited.
+	MaxEntries int
+	entries    []*Event
+}
 
 // Add event to eventlog
 func (e *EventLog) Add(ev *Event) {
@@ -20,24 +25,33 @@ func (e *EventLog) Add(ev *Event) {
 
 	ev.ID = []byte(e.currentindex())
 	ev.timestamp = time.Now()
-	*e = append(*e, ev)
+	e.entries = append(e.entries, ev)
+
+	if e.MaxEntries > 0 && len(e.entries) > e.MaxEntries {
+		e.entries = e.entries[len(e.entries)-e.MaxEntries:]
+	}
 }
 
 // Clear events from eventlog
 func (e *EventLog) Clear() {
-	*e = nil
+	e.entries = nil
 }
 
 // Replay events to a subscriber
 func (e *EventLog) Replay(s *Subscriber) {
-	for i := 0; i < len(*e); i++ {
-		id, _ := strconv.Atoi(string((*e)[i].ID))
+	for i := 0; i < len(e.entries); i++ {
+		id, _ := strconv.Atoi(string(e.entries[i].ID))
 		if id >= s.eventid {
-			s.connection <- (*e)[i]
+			s.connection <- e.entries[i]
 		}
 	}
 }
 
+// Len returns the number of events in the log.
+func (e *EventLog) Len() int {
+	return len(e.entries)
+}
+
 func (e *EventLog) currentindex() string {
-	return strconv.Itoa(len(*e))
+	return strconv.Itoa(len(e.entries))
 }

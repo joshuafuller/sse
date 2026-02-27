@@ -5,6 +5,8 @@
 package sse
 
 import (
+	"bufio"
+	"bytes"
 	"context"
 	"crypto/rand"
 	"encoding/hex"
@@ -13,6 +15,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"runtime"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -160,6 +163,9 @@ func TestClientSubscribeMultiline(t *testing.T) {
 }
 
 func TestClientChanSubscribeEmptyMessage(t *testing.T) {
+	// Per WHATWG spec: events with empty data (even if the server assigns
+	// an ID) must NOT be dispatched to the client. Verify that no events
+	// arrive within a reasonable window.
 	setup(true)
 	defer cleanup()
 
@@ -169,10 +175,13 @@ func TestClientChanSubscribeEmptyMessage(t *testing.T) {
 	err := c.SubscribeChan("test", events)
 	require.Nil(t, err)
 
-	for i := 0; i < 5; i++ {
-		_, err := waitEvent(events, time.Second)
-		require.Nil(t, err)
+	select {
+	case ev := <-events:
+		t.Fatalf("expected no events for empty data, got ID=%q Data=%q", ev.ID, ev.Data)
+	case <-time.After(300 * time.Millisecond):
+		// good — no events dispatched
 	}
+	c.Unsubscribe(events)
 }
 
 func TestClientChanSubscribe(t *testing.T) {
@@ -604,4 +613,103 @@ func (b *bodyCloseTracker) Close() error {
 	default:
 	}
 	return b.ReadCloser.Close()
+}
+
+// TestReadEventBufferOverflow verifies that when an SSE payload exceeds the
+// scanner buffer, ReadEvent returns bufio.ErrTooLong rather than io.EOF.
+// Regression test for sse-2e2.
+func TestReadEventBufferOverflow(t *testing.T) {
+	// Create a payload larger than the max buffer size.
+	// 128 bytes of data with double-newline terminator, but maxBuffer=64.
+	payload := bytes.Repeat([]byte("x"), 128)
+	payload = append(payload, []byte("\n\n")...)
+
+	reader := NewEventStreamReader(bytes.NewReader(payload), 64)
+	_, err := reader.ReadEvent()
+
+	require.Error(t, err)
+	assert.NotEqual(t, io.EOF, err, "expected real scanner error, not io.EOF")
+	assert.ErrorIs(t, err, bufio.ErrTooLong, "expected bufio.ErrTooLong")
+}
+
+// TestSubscribeWithContextCanceled verifies that SubscribeWithContext returns
+// context.Canceled (not a backoff error) when the context is cancelled.
+// Regression test for sse-1vw.
+func TestSubscribeWithContextCanceled(t *testing.T) {
+	setup(false)
+	defer cleanup()
+
+	ctx, cancel := context.WithCancel(context.Background())
+	c := NewClient(urlPath)
+
+	errCh := make(chan error, 1)
+	go func() {
+		errCh <- c.SubscribeWithContext(ctx, "test", func(msg *Event) {})
+	}()
+
+	// Let the subscription establish, then cancel.
+	time.Sleep(200 * time.Millisecond)
+	cancel()
+
+	select {
+	case err := <-errCh:
+		require.ErrorIs(t, err, context.Canceled,
+			"expected context.Canceled, got: %v", err)
+	case <-time.After(5 * time.Second):
+		t.Fatal("timed out waiting for SubscribeWithContext to return")
+	}
+}
+
+// TestEmptyDataWithIDNotDispatched verifies that an event containing only an
+// id: field (no data:) is NOT dispatched to the handler, per WHATWG spec.
+// The id should still be stored as LastEventID.
+// Regression test for sse-pc8.
+func TestEmptyDataWithIDNotDispatched(t *testing.T) {
+	// Raw SSE stream: first event has id but no data, second has data.
+	raw := "id: 42\n\ndata: hello\n\n"
+
+	tsrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		w.Header().Set("Cache-Control", "no-cache")
+		w.WriteHeader(http.StatusOK)
+		w.(http.Flusher).Flush()
+		fmt.Fprint(w, raw)
+		w.(http.Flusher).Flush()
+	}))
+	defer tsrv.Close()
+
+	c := NewClient(tsrv.URL)
+	c.ReconnectStrategy = backoff.WithMaxRetries(backoff.NewExponentialBackOff(), 0)
+
+	var received []*Event
+	var mu sync.Mutex
+	done := make(chan struct{})
+
+	go func() {
+		c.SubscribeRaw(func(msg *Event) {
+			mu.Lock()
+			received = append(received, msg)
+			mu.Unlock()
+			if strings.TrimSpace(string(msg.Data)) == "hello" {
+				close(done)
+			}
+		})
+	}()
+
+	select {
+	case <-done:
+	case <-time.After(3 * time.Second):
+		t.Fatal("timed out waiting for events")
+	}
+
+	mu.Lock()
+	defer mu.Unlock()
+
+	// Only the "hello" event should be dispatched; the id-only event must not.
+	require.Len(t, received, 1, "expected 1 dispatched event, got %d", len(received))
+	assert.Equal(t, []byte("hello"), received[0].Data)
+
+	// LastEventID should still be set from the id-only event.
+	lastID, _ := c.LastEventID.Load().([]byte)
+	assert.Equal(t, []byte("42"), lastID, "LastEventID should be set even though event was not dispatched")
 }

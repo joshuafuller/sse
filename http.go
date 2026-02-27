@@ -39,7 +39,7 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 
 	if stream == nil {
 		if !s.AutoStream {
-			http.Error(w, "Stream not found!", http.StatusInternalServerError)
+			http.Error(w, "Stream not found!", http.StatusNotFound)
 			return
 		}
 
@@ -48,12 +48,10 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 
 	eventid := 0
 	if id := r.Header.Get("Last-Event-ID"); id != "" {
-		var err error
-		eventid, err = strconv.Atoi(id)
-		if err != nil {
-			http.Error(w, "Last-Event-ID must be a number!", http.StatusBadRequest)
-			return
-		}
+		// Per WHATWG SSE spec (§9.2.4), Last-Event-ID is an opaque string.
+		// If it parses as a number, use it for event log replay;
+		// otherwise accept it without error (replay from the beginning).
+		eventid, _ = strconv.Atoi(id)
 	}
 
 	// Create the stream subscriber
@@ -74,9 +72,9 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 
 	// Push events to client
 	for ev := range sub.connection {
-		// If the data buffer is an empty string abort.
+		// If the data buffer is an empty string, skip this event.
 		if len(ev.Data) == 0 && len(ev.Comment) == 0 {
-			break
+			continue
 		}
 
 		// if the event has expired, dont send it
