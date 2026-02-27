@@ -14,6 +14,29 @@ repository and are documented in its
 
 ---
 
+## [v3.0.6] — 2026-02-27
+
+### Added
+
+- **Testing — 100% statement coverage** (up from 96.2%): Added 19 targeted tests
+  covering every previously uncovered branch across `client.go`, `http.go`, and
+  `stream.go`. New tests cover: `ErrEmptyEventMessage` on empty input,
+  bare field name (no colon) per spec §9.2.6, `trimHeader` short-input path,
+  custom `Method`/`Headers` forwarding, `retryDelay` initial-interval propagation,
+  `ResponseValidator` permanent-error path, disconnect callback on goroutine exit,
+  transport error before first connect, HTTP 204 permanent stop,
+  invalid `Content-Type` permanent stop, missing `?stream=` parameter,
+  `Server.Headers` written to response, data starting with `:` emitted verbatim,
+  and `getSubIndex` not-found path. All tests pass with `-race`.
+
+### Fixed
+
+- **`.gitignore` — coverage artifacts not excluded**: `coverage.html` and
+  `coverage.txt` were joined as a single literal entry (`coverage.html\ncoverage.txt`)
+  due to a missing newline. Fixed to three separate entries; added `coverage.out`.
+
+---
+
 ## [v3.0.5] — 2026-02-27
 
 ### Fixed
