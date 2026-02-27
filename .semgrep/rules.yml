@@ -200,3 +200,72 @@ rules:
     paths:
       exclude:
         - "*_test.go"
+
+  # ── Go library idiom rules ───────────────────────────────────────────────────
+
+  # Rule L1: Hardcoded channel buffer sizes.
+  # Channel buffers larger than 1 should be named constants so that their
+  # purpose is documented and they can be tuned in one place.
+  # Buffer of 1 ("at-most-one-pending") is idiomatic and excluded.
+  # Zero (unbuffered) is fine and excluded automatically (no second argument).
+  - id: no-hardcoded-channel-buffer
+    pattern-regex: 'make\(chan\s+[^,)]+,\s*(?:[2-9]\d*|\d{2,})\s*\)'
+    message: >
+      Hardcoded channel buffer size greater than 1. Define a named constant
+      (e.g. const subscriberChanBuf = 64) so the value is documented and
+      tunable in one place.
+    languages: [go]
+    severity: WARNING
+    paths:
+      exclude:
+        - "*_test.go"
+
+  # Rule L2: Blocking channel send inside an index-based or range for loop.
+  # A direct 'ch <- val' inside an iteration loop will block indefinitely if
+  # the receiver is slow or the channel is full. This is the typical hazard in
+  # fan-out / replay loops where the loop visits every subscriber or log entry.
+  # Event loops (for { select { } }) are intentionally excluded — those are
+  # the correct pattern for a concurrent goroutine waiting on multiple channels.
+  - id: blocking-channel-send-in-iteration-loop
+    patterns:
+      - pattern-either:
+          - pattern: |
+              for $I = 0; ...; $I++ {
+                ...
+                $CH <- $VAL
+                ...
+              }
+          - pattern: |
+              for $I := 0; ...; $I++ {
+                ...
+                $CH <- $VAL
+                ...
+              }
+          - pattern: |
+              for _, $V := range $SLICE {
+                ...
+                $CH <- $VAL
+                ...
+              }
+          - pattern: |
+              for $V := range $SLICE {
+                ...
+                $CH <- $VAL
+                ...
+              }
+      - pattern-not-inside: |
+          select {
+          case $CH <- $VAL:
+            ...
+          }
+    message: >
+      Blocking channel send ('$CH <- $VAL') inside an iteration loop with no
+      select guard. If $CH is full or the receiver is slow this loop will stall
+      indefinitely, blocking the calling goroutine.
+      Fix: wrap the send in 'select { case $CH <- $VAL: ... default: ... }'
+      or add a quit-channel case so the loop can always make progress.
+    languages: [go]
+    severity: WARNING
+    paths:
+      exclude:
+        - "*_test.go"

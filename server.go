@@ -14,7 +14,7 @@ import (
 // DefaultBufferSize size of the queue that holds the streams messages.
 const DefaultBufferSize = 1024
 
-// Server Is our main struct.
+// Server manages a collection of named SSE streams and serves them over HTTP.
 type Server struct {
 	// Extra headers adding to the HTTP response to each client
 	Headers map[string]string

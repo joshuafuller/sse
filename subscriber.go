@@ -6,7 +6,8 @@ package sse
 
 import "net/url"
 
-// Subscriber ...
+// Subscriber represents a single client connection to a stream. Its connection
+// channel carries events dispatched by the stream's run goroutine.
 type Subscriber struct {
 	quit       chan *Subscriber
 	connection chan *Event

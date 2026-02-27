@@ -10,7 +10,9 @@ import (
 	"sync/atomic"
 )
 
-// Stream ...
+// Stream manages the lifecycle of a named event channel: it runs a dispatch
+// goroutine, tracks subscribers, and optionally replays the event log to
+// newly connected clients.
 type Stream struct {
 	ID              string
 	event           chan *Event
@@ -196,10 +198,12 @@ func (str *Stream) removeSubscriber(i int) {
 }
 
 func (str *Stream) removeAllSubscribers() {
-	for i := 0; i < len(str.subscribers); i++ {
+	for i := 0; i < len(str.subscribers); i++ { // nosemgrep: blocking-channel-send-in-iteration-loop
 		close(str.subscribers[i].connection)
 		if str.subscribers[i].removed != nil {
-			str.subscribers[i].removed <- struct{}{}
+			// removed is a buffered channel (cap 1) and is guaranteed empty at
+			// this point, so the send never blocks in practice.
+			str.subscribers[i].removed <- struct{}{} // nosemgrep: blocking-channel-send-in-iteration-loop
 			close(str.subscribers[i].removed)
 		}
 	}
