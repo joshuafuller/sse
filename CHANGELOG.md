@@ -14,6 +14,69 @@ repository and are documented in its
 
 ---
 
+## [v3.0.4] — 2026-02-27
+
+### Fixed
+
+- **Server — `EventTTL` dropped all events when `AutoReplay=false`**: `ev.timestamp`
+  was only set inside `EventLog.Add()`, which only runs when `AutoReplay=true`.
+  With `AutoReplay=false` the timestamp stayed at its zero value, so
+  `time.Now().After(zero + TTL)` was always `true` — every event was silently
+  dropped regardless of how recently it was published. Fixed by stamping
+  `event.timestamp = time.Now()` in `server.process()` unconditionally.
+  `EventLog.Add()` continues to overwrite it (at approximately the same time)
+  when `AutoReplay=true`, which is harmless. Upstream:
+  [r3labs/sse PR #176](https://github.com/r3labs/sse/pull/176).
+
+- **Server — `EventLog.Replay()` blocking send stalled the stream's `run()` goroutine**:
+  The direct channel send `s.connection <- ev` inside `Replay()` would block
+  indefinitely if a reconnecting subscriber's channel was already full (e.g. a
+  slow consumer). Because `Replay()` is called from inside the stream's dispatch
+  goroutine, a stalled replay prevented all other subscribers from receiving
+  events. Fixed by wrapping the send in a non-blocking `select { … default: }`
+  so full subscriber channels are skipped during replay, consistent with the
+  non-blocking fan-out used during normal dispatch. Detected by the new
+  `blocking-channel-send-in-iteration-loop` semgrep rule.
+
+- **Server — subscriber connection channel hardcoded at `64`**: The subscriber
+  `connection` channel was created with a fixed capacity of 64 regardless of
+  `Server.BufferSize`. High-volume streams configured with a large buffer could
+  fill subscriber channels before the dispatcher had a chance to drain them.
+  Fixed by storing `buffSize` on the `Stream` struct (`subscriberBuf`) and
+  using it when creating subscriber channels, so both buffers scale together.
+  Detected by the new `no-hardcoded-channel-buffer` semgrep rule.
+
+- **Client — `ErrEmptyEventMessage` promoted to package-level sentinel**:
+  `processEvent` previously returned `errors.New("event message was empty")`
+  inline, creating an anonymous error value that callers could not match with
+  `errors.Is`. Promoted to `var ErrEmptyEventMessage = errors.New(…)` so
+  callers can detect this condition precisely. Detected by the new
+  `inline-errors-new-return` semgrep rule.
+
+### Added
+
+- **CI — library-idiom semgrep rules (L1–L6)**: Eight custom rules now enforce
+  Go library best practices in addition to the existing mutex-safety rules:
+  - `no-hardcoded-channel-buffer` (L1) — flag `make(chan T, N)` where `N > 1`
+    is an integer literal; use named constants.
+  - `blocking-channel-send-in-iteration-loop` (L2) — flag direct channel sends
+    inside index/range loops without a `select` guard.
+  - `no-fmt-print-to-stdout` (L3) — libraries must never call `fmt.Print`,
+    `fmt.Printf`, or `fmt.Println`; these write to stdout and cannot be silenced
+    by callers.
+  - `no-time-sleep-in-library` (L4) — libraries must not call `time.Sleep`;
+    callers manage delays via context cancellation and backoff strategies.
+  - `no-http-default-client` (L5) — libraries must not use `http.DefaultClient`,
+    `http.DefaultTransport`, or the package-level helpers (`http.Get`, etc.);
+    callers must supply their own `*http.Client`.
+  - `inline-errors-new-return` (L6) — returning `errors.New("…")` inline
+    prevents callers from using `errors.Is`; promote to a package-level sentinel.
+
+- **Godoc**: replaced stub comments (`// Stream …`, `// Subscriber …`,
+  `// Server Is our main struct.`) with accurate descriptions.
+
+---
+
 ## [v3.0.3] — 2026-02-27
 
 ### Fixed
@@ -357,7 +420,8 @@ out of scope, documentation-only, or already addressed by existing behaviour:
 
 ---
 
-[Unreleased]: https://github.com/joshuafuller/sse/compare/v3.0.3...HEAD
+[Unreleased]: https://github.com/joshuafuller/sse/compare/v3.0.4...HEAD
+[v3.0.4]: https://github.com/joshuafuller/sse/compare/v3.0.3...v3.0.4
 [v3.0.3]: https://github.com/joshuafuller/sse/compare/v3.0.2...v3.0.3
 [v3.0.2]: https://github.com/joshuafuller/sse/compare/v3.0.1...v3.0.2
 [v3.0.1]: https://github.com/joshuafuller/sse/compare/v3.0.0...v3.0.1
