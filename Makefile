@@ -1,4 +1,4 @@
-.PHONY: install build lint test vuln deps clean
+.PHONY: install build lint test vuln sbom deps clean
 
 install:
 	go install -v
@@ -14,6 +14,9 @@ test:
 
 vuln:
 	govulncheck ./...
+
+sbom:
+	trivy fs --format cyclonedx --output sbom.cyclonedx.json .
 
 deps:
 	go mod tidy
