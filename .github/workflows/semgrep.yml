@@ -17,5 +17,5 @@ jobs:
 
       - name: Run custom semgrep rules
         run: |
-          pip install semgrep --quiet
+          pip install --require-hashes -r .github/semgrep-requirements.txt --quiet
           semgrep --config .semgrep/rules.yml --error .

@@ -1,0 +1,13 @@
+# Generated for semgrep==1.153.1 on ubuntu-latest (manylinux x86_64)
+# Regenerate: pip install semgrep==X.Y.Z --dry-run --report report.json -q
+--require-hashes
+glom==25.12.0 \
+    --hash=sha256:b9f21e77f71a6576a43864e85066b8cc3f0f778d0d50961563f8981377a6dcb1
+opentelemetry-instrumentation-threading==0.58b0 \
+    --hash=sha256:eacc072881006aceb5b9b6831bcdce718c67ef6f31ac0b32bd6a23a94d979b4a
+semantic-version==2.10.0 \
+    --hash=sha256:de78a3b8e0feda74cabc54aab2da702113e33ac9d9eb9d2389bcf1f58b7d9177
+semgrep==1.153.1 \
+    --hash=sha256:b190ab62029ef3aa89578e844bc5a49b4f168114467b98e88f071430e49fa01d
+tomli==2.0.2 \
+    --hash=sha256:2ebe24485c53d303f690b0ec092806a085f07af5a5aa1464f3931eec36caaa38
