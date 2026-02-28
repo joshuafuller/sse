@@ -5,6 +5,8 @@ on:
     branches: [ master ]
   pull_request:
     branches: [ master ]
+  schedule:
+    - cron: '0 7 * * 1'   # Weekly Monday 07:00 UTC
 
 permissions:
   contents: read
@@ -12,10 +14,23 @@ permissions:
 jobs:
   semgrep:
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      security-events: write
     steps:
       - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
 
-      - name: Run custom semgrep rules
-        run: |
-          pip install --require-hashes -r .github/semgrep-requirements.txt --quiet
-          semgrep --config .semgrep/rules.yml --error .
+      - name: Install semgrep
+        run: pip install --require-hashes -r .github/semgrep-requirements.txt --quiet
+
+      - name: Run semgrep (SARIF)
+        run: semgrep --config .semgrep/rules.yml --sarif --output semgrep.sarif . || true
+
+      - name: Upload SARIF to GitHub Security tab
+        uses: github/codeql-action/upload-sarif@89a39a4e59826350b863aa6b6252a07ad50cf83e # v4
+        with:
+          sarif_file: semgrep.sarif
+          category: semgrep
+
+      - name: Fail on findings
+        run: semgrep --config .semgrep/rules.yml --error .
