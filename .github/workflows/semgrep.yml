@@ -18,13 +18,29 @@ jobs:
       contents: read
       security-events: write
     steps:
-      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
 
       - name: Install semgrep
         run: pip install --require-hashes -r .github/semgrep-requirements.txt --quiet
 
       - name: Run semgrep (SARIF)
         run: semgrep --config .semgrep/rules.yml --sarif --output semgrep.sarif . || true
+
+      - name: Strip suppressed findings from SARIF
+        # nosemgrep-suppressed findings are included in SARIF with a
+        # "suppressions" field. GitHub Code Scanning surfaces them as alerts
+        # regardless. Remove them so only genuine findings appear in the
+        # Security tab.
+        run: |
+          python3 - <<'PYEOF'
+          import json
+          with open("semgrep.sarif") as f:
+              sarif = json.load(f)
+          for run in sarif["runs"]:
+              run["results"] = [r for r in run["results"] if not r.get("suppressions")]
+          with open("semgrep.sarif", "w") as f:
+              json.dump(sarif, f)
+          PYEOF
 
       - name: Upload SARIF to GitHub Security tab
         uses: github/codeql-action/upload-sarif@89a39a4e59826350b863aa6b6252a07ad50cf83e # v4
