@@ -27,7 +27,7 @@ jobs:
           sudo apt-get update -qq && sudo apt-get install -y trivy
 
       - name: Generate SBOM (CycloneDX)
-        uses: aquasecurity/trivy-action@e368e328979b113139d6f9068e03accaed98a518 # 0.34.1
+        uses: aquasecurity/trivy-action@f685ba721536b1ff19093eb4e1b1bf994c2bdbe2 # 0.34.1
         with:
           scan-type: fs
           scan-ref: '.'
@@ -43,7 +43,7 @@ jobs:
           retention-days: 90
 
       - name: Scan for CVEs (SARIF)
-        uses: aquasecurity/trivy-action@e368e328979b113139d6f9068e03accaed98a518 # 0.34.1
+        uses: aquasecurity/trivy-action@f685ba721536b1ff19093eb4e1b1bf994c2bdbe2 # 0.34.1
         with:
           scan-type: fs
           scan-ref: '.'
