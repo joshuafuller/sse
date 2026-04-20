@@ -1,9 +1,9 @@
 # SSE — Server Sent Events Client/Server Library for Go
 
-A community-maintained fork of [r3labs/sse](https://github.com/r3labs/sse), which has
-been inactive since January 2023. The goal is to fix known bugs, address the open issue
-backlog, and keep the library current with modern Go. Full credit to the original
-r3labs authors for the foundational work.
+A community-maintained fork of [r3labs/sse](https://github.com/r3labs/sse).
+The goal is to continue maintaining the library, fix known bugs, address open
+issues and unmerged pull requests, and keep the project current with modern Go.
+Full credit to the original r3labs authors for the foundational work.
 
 [![CI](https://github.com/joshuafuller/sse/actions/workflows/ci.yml/badge.svg)](https://github.com/joshuafuller/sse/actions/workflows/ci.yml)
 [![Lint](https://github.com/joshuafuller/sse/actions/workflows/lint.yml/badge.svg)](https://github.com/joshuafuller/sse/actions/workflows/lint.yml)
@@ -35,6 +35,17 @@ go get github.com/joshuafuller/sse/v3
 v3 has **2 compile-breaking changes** (`EventLog` type, `Client.Connected` field)
 and **6 behavioral differences** from v2. See **[docs/migrating-from-v2.md](docs/migrating-from-v2.md)**
 for before/after code, the full behavioral change table, and new features.
+
+## Go Support Policy
+
+This fork requires **Go 1.25+**.
+
+Per the Go security policy, fixes are prepared for the **two most recent major
+releases and the head/master revision**. We follow that policy for this fork and
+do not support Go 1.24.
+
+- Go security policy: https://go.dev/doc/security/policy
+- Go release history: https://go.dev/doc/devel/release
 
 ## Quick Start
 
